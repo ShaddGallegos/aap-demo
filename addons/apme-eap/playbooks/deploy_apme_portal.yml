@@ -106,7 +106,7 @@
         src: deployment-info.md.j2
         # yamllint disable rule:line-length
         dest: >-
-          {{ collection_root }}/apme-portal-deployment-{{ ansible_date_time.year }}-{{ ansible_date_time.month }}-{{ ansible_date_time.day }}-{{ ansible_date_time.hour }}{{ ansible_date_time.minute }}.md
+          {{ collection_root }}/apme-portal-deployment-{{ ansible_facts['date_time']['year'] }}-{{ ansible_facts['date_time']['month'] }}-{{ ansible_facts['date_time']['day'] }}-{{ ansible_facts['date_time']['hour'] }}{{ ansible_facts['date_time']['minute'] }}.md
         # yamllint enable rule:line-length
         mode: "0644"
       changed_when: false

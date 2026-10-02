@@ -268,9 +268,9 @@ if [ -n "$MCP_TOKEN" ]; then
       # Verify the MCP connection works
       echo "  Verifying MCP connection..."
       if MCP_STATUS=$(claude mcp get aap-demo 2>&1); then
-        if echo "$MCP_STATUS" | grep -q "✓ Connected"; then
+        if echo "$MCP_STATUS" | grep -Eq "[✓✔] Connected"; then
           echo "  ✓ MCP server is connected and ready"
-        elif echo "$MCP_STATUS" | grep -q "✗ Failed to connect"; then
+        elif echo "$MCP_STATUS" | grep -Eq "[✗✘] Failed to connect"; then
           echo "  ⚠ MCP server configured but connection failed"
           # DEBUG
           echo "CA path: ${CA_PATH}"

@@ -14,19 +14,26 @@ Deploy AAP to a local MicroShift cluster in minutes.
   prompts for optional temp swap on memory-constrained hosts (see
   [scripts/README.md](scripts/README.md))
 - **Pull secret** — download from the
-  [Red Hat console](https://console.redhat.com/openshift/install/pull-secret),
-  then run:
-
-```bash
-mkdir -p ~/.aap-demo
-cp ~/Downloads/pull-secret.txt ~/.aap-demo/pull-secret.txt
-```
+  [Red Hat console](https://console.redhat.com/openshift/install/pull-secret) to
+  `~/Downloads/pull-secret.txt` (or pass its location with `--pull-secret`).
 
 ## Install
 
+Download your pull secret to `~/Downloads/pull-secret.txt`, then run:
+
 ```bash
-git clone https://github.com/RedHatOfficial/aap-demo.git && cd aap-demo && ./install.sh && aap-demo deploy
+git clone https://github.com/RedHatOfficial/aap-demo.git
+cd aap-demo
+./scripts/local-prereq.sh --full
 ```
+
+On Linux x86_64, `--full` installs CRC when needed, installs `aap-demo`, creates and
+deploys the local AAP environment, then enables MCP Server, APME, Product Demos, and
+Automation Orchestrator. It automatically imports `~/Downloads/pull-secret.txt`; use
+`--pull-secret /path/to/pull-secret.txt` when the download is elsewhere. Optional APME
+GitHub integration can be configured later.
+
+For AAP without the addon suite, use `./install.sh && aap-demo deploy`.
 
 `aap-demo create` provisions the MicroShift VM only. `aap-demo deploy` installs OLM and AAP
 (use `deploy` for the typical path; `create` alone is for cluster-only setup).

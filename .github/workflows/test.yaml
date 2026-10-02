@@ -41,6 +41,9 @@ jobs:
       - name: Run installer tests
         run: ./test/test-install.sh
 
+      - name: Run local prerequisite path tests
+        run: ./test/test-local-prereq.sh
+
       - name: Run core command tests
         run: ./test/test-core-commands.sh
 

@@ -62,6 +62,7 @@ Host prep for pull secret, libvirt, and CRC setup:
 
 ```bash
 ./scripts/local-prereq.sh
+./scripts/local-prereq.sh --deploy  # prepare and deploy from this checkout
 ```
 
 Manual swap management (non-interactive or after deploy):

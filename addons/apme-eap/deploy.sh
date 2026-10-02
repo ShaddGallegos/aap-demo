@@ -750,6 +750,8 @@ deploy() {
   # Run main deployment playbook directly
   # Note: Load defaults first, then vars file so user config takes precedence
   ansible-playbook "${SCRIPT_DIR}/playbooks/deploy_apme_portal.yml" \
+    -i "localhost," \
+    -c local \
     -e "@${SCRIPT_DIR}/defaults.yml" \
     -e "@${VARS_FILE}"
 

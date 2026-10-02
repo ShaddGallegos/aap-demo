@@ -49,13 +49,25 @@ Linux distributions using CRC (OpenShift Local):
 
 ```bash
 ./scripts/local-prereq.sh
+./scripts/local-prereq.sh --deploy  # prepare, then deploy from this checkout
+./scripts/local-prereq.sh --full    # install CRC, deploy, and enable the demo suite
 ```
 
-Steps performed:
+The script resolves the repository from its own location, so either command can
+be launched from any working directory. `--deploy` runs that checkout's
+`aap-demo.sh` rather than relying on an `aap-demo` command in `PATH`.
 
-1. Verify `~/.aap-demo/pull-secret.txt` exists
-2. Add the current user to the `libvirt` group (if needed)
-3. Run `crc setup` with the MicroShift preset
+`--full` performs the complete Linux x86_64 workstation bootstrap:
+
+1. Import `~/Downloads/pull-secret.txt` (or the path passed with `--pull-secret`)
+2. Install the `aap-demo` command and its dependencies
+3. Download and install CRC to `~/.local/bin` when needed
+4. Add the current user to the `libvirt` group and run `crc setup`
+5. Deploy AAP and enable `mcp-server`, `apme-eap`, `product-demos`, and `ao`
+
+The Red Hat pull secret must still be downloaded manually because console authentication
+is required. Optional APME GitHub integration is skipped in full mode and can be configured
+later. Override the CRC artifact URL for mirrors with `CRC_DOWNLOAD_URL`.
 
 Temp swap is handled by `aap-demo create` on Linux (see above), not this script.
 
