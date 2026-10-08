@@ -633,9 +633,9 @@ LAUNCH_PAYLOAD=$(jq -n \
       _aap_version: $version,
       apd_ee_image: $ee_image,
       aap_validate_certs: false,
-      aap_configuration_async_retries: 0,
-      gateway_configuration_async_retries: 0,
-      controller_configuration_async_retries: 0
+      aap_configuration_async_retries: 50,
+      gateway_configuration_async_retries: 50,
+      controller_configuration_async_retries: 50
     }
   }')
 

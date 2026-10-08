@@ -476,6 +476,103 @@ _fleet_stop_vm() {
   fi
 }
 
+fleet_node_start() {
+  local index="$1"
+  local node_dir="${FLEET_DIR}/node-${index}"
+  local meta="${node_dir}/meta"
+  if [ ! -f "$meta" ] || [ ! -f "${node_dir}/disk.qcow2" ] \
+    || [ ! -f "${node_dir}/cloud-init.iso" ]; then
+    _err "Fleet node ${index} is incomplete and cannot be restarted"
+    return 1
+  fi
+
+  local port pid hostname
+  port=$(grep '^PORT=' "$meta" | cut -d= -f2)
+  pid=$(grep '^PID=' "$meta" | cut -d= -f2)
+  hostname=$(grep '^HOSTNAME=' "$meta" | cut -d= -f2)
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    echo "  ✓ ${hostname} already running"
+    return 0
+  fi
+  if ! _fleet_check_port_available "$port"; then
+    _err "Port ${port} is already in use; cannot start ${hostname}"
+    return 1
+  fi
+
+  local qemu_bin accel machine bios_args
+  qemu_bin=$(_fleet_qemu_binary) || return 1
+  accel=$(_fleet_qemu_accel) || return 1
+  machine=$(_fleet_qemu_machine) || return 1
+  bios_args=$(_fleet_qemu_bios_args 2>/dev/null) || bios_args=""
+  local qemu_cmd=(
+    "$qemu_bin"
+    -accel "$accel"
+    -M "$machine"
+    -m "$FLEET_NODE_MEM"
+    -smp "$FLEET_NODE_CPUS"
+    -cpu host
+    -drive "file=${node_dir}/disk.qcow2,format=qcow2"
+    -drive "file=${node_dir}/cloud-init.iso,format=raw,if=virtio"
+    -netdev "user,id=net0,hostfwd=tcp:0.0.0.0:${port}-:22"
+    -device "virtio-net,netdev=net0"
+    -display none
+    -pidfile "${node_dir}/qemu.pid"
+    -daemonize
+    -serial "file:${node_dir}/console.log"
+  )
+  if [ -n "$bios_args" ]; then
+    # shellcheck disable=SC2206
+    qemu_cmd+=($bios_args)
+  fi
+
+  echo "  Starting VM ${hostname} (port ${port})..."
+  if ! "${qemu_cmd[@]}" 2>"${node_dir}/qemu-error.log"; then
+    _err "Failed to restart ${hostname}"
+    cat "${node_dir}/qemu-error.log" >&2
+    return 1
+  fi
+  pid=$(cat "${node_dir}/qemu.pid")
+  sed -i.bak -e "s/^PID=.*/PID=${pid}/" -e 's/^STATUS=.*/STATUS=running/' "$meta"
+  rm -f "${meta}.bak"
+
+  echo "  Waiting for SSH on port ${port}..."
+  local ssh_key attempts=0
+  ssh_key=$(_fleet_ssh_private_key_path)
+  while [ "$attempts" -lt 60 ]; do
+    if ssh -p "$port" -i "$ssh_key" \
+      -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      -o LogLevel=ERROR -o ConnectTimeout=2 -o BatchMode=yes \
+      ansible@127.0.0.1 'true' 2>/dev/null; then
+      echo "  ✓ ${hostname} ready (SSH on port ${port})"
+      return 0
+    fi
+    attempts=$((attempts + 1))
+    sleep 3
+  done
+  _err "${hostname} did not become reachable over SSH"
+  return 1
+}
+
+fleet_start_all() {
+  [ -d "$FLEET_DIR" ] || return 0
+  local failed=false found=false
+  for meta in "${FLEET_DIR}"/node-*/meta; do
+    [ -f "$meta" ] || continue
+    found=true
+    local idx
+    idx=$(grep '^INDEX=' "$meta" | cut -d= -f2)
+    fleet_node_start "$idx" || failed=true
+  done
+  if [ "$found" = false ]; then
+    echo "  No Fleet nodes to start"
+  elif [ "$failed" = true ]; then
+    _err "One or more Fleet nodes failed to start"
+    return 1
+  else
+    echo "  ✓ Fleet nodes started"
+  fi
+}
+
 fleet_list() {
   local found=false
   printf "  %-6s %-20s %-8s %-10s %s\n" "INDEX" "HOSTNAME" "PORT" "PID" "STATUS"
@@ -504,7 +601,7 @@ fleet_list() {
   if [ "$found" = false ]; then
     echo "  No fleet nodes found"
     echo ""
-    echo "  Create nodes: aap-demo fleet add <count> --image <path>"
+    echo "  Create nodes: aap-demo fleet add <count> --image <rhel9|rhel10|local-qcow2-path>"
   fi
 }
 
@@ -570,7 +667,7 @@ fleet_create_all() {
 
   if [ -z "$image_path" ]; then
     _err "No image path specified"
-    echo "  Use: --image <path-to-qcow2>"
+    echo "  Use: --image <rhel9|rhel10|local-qcow2-path>"
     return 1
   fi
 

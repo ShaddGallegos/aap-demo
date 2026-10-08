@@ -7,8 +7,17 @@ Validation tests for `aap-demo.sh` command-line interface.
 ```bash
 # Run the shell and Python test scripts used by CI
 ./test/test-core-commands.sh
+./test/test-reliability-foundation.sh
 ./test/test-aap-readiness.sh
+./test/test-cli-parsing.sh
 ./test/test-ingress-ca-export.sh
+./test/test-fleet-auth.sh
+./test/test-fleet-cli.sh
+./test/test-fleet-images.sh
+./test/test-fleet-aap.sh
+./test/test-fleet-subscription.sh
+./test/test-credential-vault-migration.sh
+./test/test-addon-restore.sh
 python3 ./test/test-ao-import-demos.py
 
 # AAP provisioning fast-path test
@@ -62,6 +71,40 @@ Tests validate:
 6. **AO replica profile rendering** — default one-replica and explicit
    two-replica CR values, validation errors, and operator source-of-truth
    behavior
+7. **Reliability foundation** — mutation lock contention and stale recovery,
+   scheduler-aware resource accounting, strict preflight behavior, and shared
+   Deployment readiness diagnostics
+8. **Fault injection** — CRC start/stop failures, CoreDNS restoration failure,
+   malformed Kubernetes JSON and quantities, and rollout failures return nonzero
+
+### Live Idempotency
+
+An opt-in live harness verifies that running the same command a second time does
+not change normalized Kubernetes desired state:
+
+```bash
+AAP_DEMO_LIVE_IDEMPOTENCY=1 \
+  ./test/test-live-idempotency.sh -- aap-demo wire
+```
+
+The explicit environment guard is required because the supplied command may mutate
+the live cluster. The harness compares resource identity and `spec`, excluding status
+and volatile metadata. It validates Kubernetes desired-state idempotency only; it
+does not prove idempotency of every external AAP API side effect.
+
+### Live Automation Orchestrator smoke test
+
+The guarded, read-only AO smoke test verifies every JavaScript asset packaged in
+the running UI pod is served with a JavaScript content type. It also authenticates
+to the local AO and AAP APIs to verify the required integrations, all 10 imported
+AO demo workflows, and all 17 AAP Orchestrator job templates:
+
+```bash
+AAP_DEMO_LIVE_AO_TEST=1 python3 test/test-ao-live-smoke.py
+```
+
+Credentials are read from the cluster's generated password secrets and are never
+printed. The test does not create, update, launch, or delete automation content.
 
 Tests **do not** validate:
 

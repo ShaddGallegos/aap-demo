@@ -143,7 +143,11 @@ if [[ -n "${NEED_RELOGIN:-}" ]]; then
 elif [[ "$DEPLOY_AFTER_SETUP" == "true" ]]; then
   echo "Starting deployment from ${REPO_ROOT}..."
   cd "$REPO_ROOT"
-  "$AAP_DEMO_CLI" deploy
+  if [[ "$FULL_SETUP" == "true" ]]; then
+    AAP_DEMO_SKIP_STANDARD_AO=true "$AAP_DEMO_CLI" deploy
+  else
+    "$AAP_DEMO_CLI" deploy
+  fi
   if [[ "$FULL_SETUP" == "true" ]]; then
     for addon in mcp-server apme-eap product-demos ao; do
       echo "Enabling addon: ${addon}"

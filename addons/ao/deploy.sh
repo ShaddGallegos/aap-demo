@@ -879,6 +879,7 @@ AO_AAP_SYNC_RAN=0
 
 provision_aap_demos() {
   local _aap_route _ao_route _aap_token _ao_namespace _ao_token _ao_credential _ao_integration
+  local _mcp_credential _mcp_integration
   local -a _provision_args
   _aap_route=$(aap_gateway_route_host)
   _ao_route=$(wire_ao_route_host 2>/dev/null || true)
@@ -908,6 +909,16 @@ provision_aap_demos() {
       --control-branch "${AO_SYNC_BRANCH:-main}"
       --ao-demo-ref "${AO_DEMOS_REF:-abcc1a1482a}"
     )
+    _mcp_credential=$(wire_ao_find_credential_by_name "$WIRE_MCP_CREDENTIAL_NAME" 2>/dev/null || true)
+    _mcp_integration=$(wire_ao_find_integration_by_name "$WIRE_MCP_INTEGRATION_NAME" 2>/dev/null || true)
+    if [ -n "$_mcp_credential" ] && [ -n "$_mcp_integration" ]; then
+      _provision_args+=(
+        --ao-mcp-credential-id "$_mcp_credential"
+        --ao-mcp-integration-id "$_mcp_integration"
+      )
+    else
+      wire_warn "AO MCP credential or integration is incomplete; skipping MCP binding for AAP sync"
+    fi
     if [ "${AO_LLM_PROVIDER:-ollama}" != none ]; then
       local _agent_cred="${AO_AGENT_CREDENTIAL_ID:-}"
       local _agent_integration_id="${AO_AGENT_INTEGRATION_ID:-}"

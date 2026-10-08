@@ -15,12 +15,11 @@ and are checked in under [`manifests/`](manifests/). `deploy.sh` applies them wi
 ## Quick start
 
 ```bash
-aap-demo deploy          # once: AAP + OLM + catalog
-aap-demo enable ao       # prompts for local Ollama, external LLM, or no LLM
+aap-demo deploy          # AAP + OLM + AO; prompts for the AO LLM provider
 aap-demo status          # route URL + admin password when ready
 ```
 
-During an interactive `enable ao`, choose one of these LLM provider paths:
+During an interactive `deploy` or `enable ao`, choose one of these LLM provider paths:
 
 1. **Local Ollama** — installs the `ollama` addon, pulls `qwen2.5:3b`, and wires
    the local provider into AO. This remains the default for `QUIET=true` and
@@ -111,8 +110,12 @@ As part of the same step, AAP is configured with an `AAP Orchestrator Demos`
 project pointing at the upstream demo repository and 17 idempotent job templates
 for its certificate, disk, CVE, ServiceNow, and ticket-enrichment playbooks. The
 templates use SCM update-on-launch, so the playbooks are synchronized and executed
-by AAP. The multi-OS cloud workflow continues to use the existing `ansible/product-demos`
-cloud templates when the product-demos addon is enabled.
+by AAP. When the Fleet addon has registered its `Fleet` inventory and
+`Fleet SSH Key`, the 11 templates that execute against remote hosts are bound to
+those resources automatically; localhost notification and API-control templates
+retain the default inventory and do not receive the SSH credential. The multi-OS
+cloud workflow continues to use the existing `ansible/product-demos` cloud
+templates when the product-demos addon is enabled.
 
 Wiring also runs automatically when AAP deploy finishes (`aap-demo deploy` / `watch`).
 All agentic nodes in synchronized workflows receive the selected provider
@@ -121,6 +124,13 @@ integration, credential, and model; external mode uses `gpt-5.6-luna` by default
 Use `aap-demo wire` to re-run wiring after manual cluster changes; it also restores
 the CoreDNS route rewrite if MicroShift's DNS operator has dropped it, and reapplies
 AO pod `hostAliases` for AAP/AO/MCP route hostnames.
+
+Run the read-only live smoke test to verify all packaged UI modules, required
+integrations, imported workflows, and AAP job templates:
+
+```bash
+AAP_DEMO_LIVE_AO_TEST=1 python3 test/test-ao-live-smoke.py
+```
 
 **Workflow builder note:** Configuration → Integrations may show **Available** while the workflow
 UI still reports “AAP credential not configured” until you select **aap-demo AAP** and

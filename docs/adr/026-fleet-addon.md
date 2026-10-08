@@ -33,6 +33,7 @@ addons/fleet/
 ├── deploy.sh                  # ADR-008 contract: deploy + --delete
 ├── fleet.sh                   # VM lifecycle (QEMU, cloud-init, SSH)
 ├── fleet-aap.sh               # AAP REST API registration (inventory, credential, hosts)
+├── fleet-auth.sh              # Vault-backed Red Hat Customer Portal authentication
 └── cloud-init/
     ├── user-data.template     # Cloud-init user provisioning (ansible user + SSH key)
     └── meta-data.template     # Cloud-init instance metadata
@@ -129,6 +130,36 @@ up even if the user disabled the addon.
 - `aap-demo fleet *` commands work identically to before
 - Migration from `seed-nodes` naming (ADR-era rename) preserved in `fleet.sh`
 - FLEET_IMAGE config persistence unchanged (`~/.aap-demo/config`)
+
+### Red Hat download authentication
+
+Fleet stores Red Hat credentials and cluster identity in the Ansible Vault-encrypted
+`~/.ansible/conf/env-aap-demo.yml` file. Credentials include the offline token
+and retained CDN username/password, plus the Red Hat account number and selected
+AAP subscription ID. Fleet exchanges the offline token for a short-lived bearer
+token, then calls the RHSM API endpoint
+`/management/v1/images/{sha256}/download`. The returned entitled CDN URL must
+use the expected Red Hat CDN host and image filename. It remains only in memory,
+is never printed or persisted, and is used without forwarding the bearer token.
+The retained CDN username/password are not transmitted by this workflow.
+During AAP registration, however, Fleet sends those portal credentials to AAP's
+`/config/subscriptions/` endpoint, filters returned subscriptions by the encrypted
+account number, and attaches the encrypted subscription selection through
+`/config/attach/`. Secrets are sent in request bodies rather than process
+arguments.
+The Vault password is read from
+`~/.ansible/conf/.vaultpass-aap-demo.txt`. Both files and their parent directory
+are restricted to the current user.
+
+```text
+aap-demo fleet auth          # Prompt once and validate the token
+aap-demo fleet auth status   # Validate without prompting
+aap-demo fleet auth reset    # Remove only the Red Hat token
+```
+
+Short-lived access tokens are requested from Red Hat SSO when needed and are never
+persisted. If the offline token is rejected, the next interactive authentication
+attempt prompts for a replacement.
 
 ## Alternatives Considered
 

@@ -89,10 +89,186 @@ _fleet_aap_api() {
   [ -n "$_FLEET_AAP_CURL_TLS" ] && curl_args+=($_FLEET_AAP_CURL_TLS)
 
   if [ -n "$body" ]; then
-    curl_args+=(-d "$body")
+    printf '%s' "$body" | curl "${curl_args[@]}" --data-binary @- "$url" 2>/dev/null
+    return
   fi
 
   curl "${curl_args[@]}" "$url" 2>/dev/null
+}
+
+_fleet_aap_has_valid_license() {
+  local response
+  response=$(_fleet_aap_api GET "/config/") || return 1
+  if [ -z "$response" ] || ! python3 -m json.tool >/dev/null 2>&1 <<<"$response"; then
+    _err "AAP controller API is not ready"
+    return 2
+  fi
+  python3 -c '
+import json
+import sys
+license_info = json.load(sys.stdin).get("license_info") or {}
+valid = license_info.get("valid_key") is True
+capacity = license_info.get("instance_count", license_info.get("quantity", 0))
+raise SystemExit(0 if valid and int(capacity or 0) > 0 else 1)
+' <<<"$response"
+}
+
+_fleet_aap_select_subscription_id() {
+  local subscriptions="$1"
+  local account_number="$2"
+  local preferred_id="$3"
+  SUBSCRIPTIONS="$subscriptions" ACCOUNT_NUMBER="$account_number" \
+    PREFERRED_ID="$preferred_id" python3 -c '
+import json
+import os
+import sys
+
+data = json.loads(os.environ["SUBSCRIPTIONS"])
+if isinstance(data, dict) and data.get("error"):
+    print(data["error"], file=sys.stderr)
+    raise SystemExit(1)
+rows = data if isinstance(data, list) else data.get("results", [])
+matches = [row for row in rows if str(row.get("account_number", "")) == os.environ["ACCOUNT_NUMBER"]]
+by_id = {}
+for row in matches:
+    subscription_id = str(row.get("subscription_id", ""))
+    if subscription_id:
+        by_id[subscription_id] = row
+preferred = os.environ["PREFERRED_ID"]
+if preferred and preferred in by_id:
+    print(preferred)
+elif len(by_id) == 1:
+    print(next(iter(by_id)))
+else:
+    for subscription_id, row in by_id.items():
+        name = row.get("subscription_name") or row.get("product_name") or "Unnamed subscription"
+        print(f"{subscription_id}\t{name}", file=sys.stderr)
+    raise SystemExit(2)
+'
+}
+
+_fleet_aap_prompt_subscription_id() {
+  local subscriptions="$1"
+  local account_number="$2"
+  if [ "${QUIET:-false}" = "true" ]; then
+    _err "Multiple AAP subscriptions match Red Hat account ${account_number}"
+    return 1
+  fi
+  if [ ! -r "$AAP_DEMO_SECRET_PROMPT_DEVICE" ]; then
+    _err "Cannot securely prompt for an AAP subscription ID"
+    return 1
+  fi
+
+  echo "Available AAP subscriptions for account ${account_number}:"
+  _fleet_aap_select_subscription_id "$subscriptions" "$account_number" "" \
+    >/dev/null || true
+  local subscription_id
+  printf "AAP subscription ID: " >"$AAP_DEMO_SECRET_PROMPT_OUTPUT"
+  IFS= read -r subscription_id <"$AAP_DEMO_SECRET_PROMPT_DEVICE"
+  if ! SUBSCRIPTIONS="$subscriptions" ACCOUNT_NUMBER="$account_number" \
+    SUBSCRIPTION_ID="$subscription_id" python3 -c '
+import json
+import os
+import sys
+data = json.loads(os.environ["SUBSCRIPTIONS"])
+rows = data if isinstance(data, list) else data.get("results", [])
+valid = any(
+    str(row.get("account_number", "")) == os.environ["ACCOUNT_NUMBER"]
+    and str(row.get("subscription_id", "")) == os.environ["SUBSCRIPTION_ID"]
+    for row in rows
+)
+raise SystemExit(0 if valid else 1)
+'; then
+    _err "Subscription ID ${subscription_id} is not available for account ${account_number}"
+    return 1
+  fi
+  aap_demo_vault_set "$FLEET_REDHAT_SUBSCRIPTION_ID_KEY" "$subscription_id" || return 1
+  FLEET_AAP_SUBSCRIPTION_ID="$subscription_id"
+}
+
+_fleet_aap_ensure_subscription() {
+  local license_status
+  if _fleet_aap_has_valid_license; then
+    return 0
+  else
+    license_status=$?
+  fi
+  if [ "$license_status" -eq 2 ]; then
+    echo "  Wait for AAP pods to become ready, then retry: aap-demo fleet register"
+    return 1
+  fi
+
+  echo "AAP subscription is missing; attaching an entitled subscription..."
+  fleet_redhat_ensure_cdn_credentials true || return 1
+  fleet_redhat_ensure_account_number true || return 1
+
+  local username password account_number preferred_id payload subscriptions
+  username=$(aap_demo_vault_get "$FLEET_CDN_USERNAME_KEY") || return 1
+  password=$(aap_demo_vault_get "$FLEET_CDN_PASSWORD_KEY") || return 1
+  account_number=$(aap_demo_vault_get "$FLEET_REDHAT_ACCOUNT_NUMBER_KEY") || return 1
+  preferred_id=$(aap_demo_vault_get "$FLEET_REDHAT_SUBSCRIPTION_ID_KEY" 2>/dev/null || true)
+  payload=$(CDN_USERNAME="$username" CDN_PASSWORD="$password" python3 -c '
+import json
+import os
+print(json.dumps({
+    "subscriptions_username": os.environ["CDN_USERNAME"],
+    "subscriptions_password": os.environ["CDN_PASSWORD"],
+}))
+')
+  subscriptions=$(_fleet_aap_api POST "/config/subscriptions/" "$payload") || {
+    unset username password payload
+    _err "AAP could not contact the Red Hat subscription service"
+    return 1
+  }
+  unset username password payload
+  if [ -z "$subscriptions" ] || ! python3 -m json.tool >/dev/null 2>&1 <<<"$subscriptions"; then
+    _err "AAP subscription API returned an invalid or empty response"
+    return 1
+  fi
+
+  local subscription_id selection_status
+  if subscription_id=$(_fleet_aap_select_subscription_id \
+    "$subscriptions" "$account_number" "$preferred_id"); then
+    selection_status=0
+  else
+    selection_status=$?
+  fi
+  if [ "$selection_status" -eq 2 ]; then
+    _fleet_aap_prompt_subscription_id "$subscriptions" "$account_number" || return 1
+    subscription_id="$FLEET_AAP_SUBSCRIPTION_ID"
+  elif [ "$selection_status" -ne 0 ] || [ -z "$subscription_id" ]; then
+    _err "No AAP subscription is available for Red Hat account ${account_number}"
+    return 1
+  fi
+
+  aap_demo_vault_set "$FLEET_REDHAT_SUBSCRIPTION_ID_KEY" "$subscription_id" || return 1
+  payload=$(SUBSCRIPTION_ID="$subscription_id" python3 -c '
+import json
+import os
+print(json.dumps({"subscription_id": os.environ["SUBSCRIPTION_ID"]}))
+')
+  local attach_response
+  attach_response=$(_fleet_aap_api POST "/config/attach/" "$payload") || {
+    _err "AAP subscription attachment request failed"
+    return 1
+  }
+  if ! python3 -c '
+import json
+import sys
+data = json.load(sys.stdin)
+raise SystemExit(0 if data.get("valid_key") is True else 1)
+' <<<"$attach_response"; then
+    local detail
+    detail=$(python3 -c '
+import json
+import sys
+data = json.load(sys.stdin)
+print(data.get("error") or data.get("detail") or "unknown error")
+' <<<"$attach_response" 2>/dev/null || echo "unknown error")
+    _err "AAP subscription attachment failed: $detail"
+    return 1
+  fi
+  echo "  ✓ AAP subscription attached"
 }
 
 # -----------------------------------------------------------------------------
@@ -292,6 +468,47 @@ HOST_EOF
   fi
 }
 
+_fleet_aap_remove_stale_hosts() {
+  local inv_id="$1"
+  local expected_hosts=""
+
+  for meta in "${FLEET_DIR}"/node-*/meta; do
+    [ -f "$meta" ] || continue
+    local hostname pid
+    hostname=$(grep '^HOSTNAME=' "$meta" | cut -d= -f2)
+    pid=$(grep '^PID=' "$meta" | cut -d= -f2)
+    if [ -n "$hostname" ] && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      expected_hosts+="${hostname}"$'\n'
+    fi
+  done
+
+  local hosts_resp
+  hosts_resp=$(_fleet_aap_api GET "/inventories/${inv_id}/hosts/?page_size=200")
+  local stale_hosts
+  if ! stale_hosts=$(EXPECTED_HOSTS="$expected_hosts" python3 -c '
+import json
+import os
+import sys
+
+expected = set(os.environ["EXPECTED_HOSTS"].splitlines())
+response = json.load(sys.stdin)
+for host in response.get("results", []):
+    name = host.get("name", "")
+    if name.startswith("aap-fleet-node-") and name not in expected:
+        print("{}\t{}".format(host["id"], name))
+' <<<"$hosts_resp"); then
+    _err "Could not reconcile Fleet inventory hosts"
+    return 1
+  fi
+
+  local host_id hostname
+  while IFS=$'\t' read -r host_id hostname; do
+    [ -n "$host_id" ] || continue
+    _fleet_aap_api DELETE "/hosts/${host_id}/" >/dev/null
+    echo "  ✓ Removed stale host '${hostname}'"
+  done <<<"$stale_hosts"
+}
+
 _fleet_aap_run_ping() {
   local inv_id="$1"
   local cred_id="$2"
@@ -359,6 +576,7 @@ fleet_register_aap() {
   echo "Registering fleet nodes in AAP..."
 
   _fleet_aap_get_auth || return 1
+  _fleet_aap_ensure_subscription || return 1
 
   local org_id
   org_id=$(_fleet_aap_get_org_id)
@@ -393,7 +611,10 @@ fleet_register_aap() {
     return 1
   fi
 
+  _fleet_aap_remove_stale_hosts "$inv_id" || return 1
+
   # Create hosts
+  local registration_failed=false
   for meta in "${FLEET_DIR}"/node-*/meta; do
     [ -f "$meta" ] || continue
     local hostname port pid
@@ -403,9 +624,18 @@ fleet_register_aap() {
 
     # Only register running nodes
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-      _fleet_aap_create_host "$inv_id" "$hostname" "$host_gw_ip" "$port"
+      if ! _fleet_aap_create_host "$inv_id" "$hostname" "$host_gw_ip" "$port"; then
+        registration_failed=true
+      fi
     fi
   done
+
+  if [ "$registration_failed" = true ]; then
+    _err "One or more Fleet nodes could not be registered in AAP"
+    echo "  If AAP reports 'License is missing', attach a subscription and retry:"
+    echo "  aap-demo fleet register"
+    return 1
+  fi
 
   # Run ad-hoc ping
   _fleet_aap_run_ping "$inv_id" "$cred_id"
