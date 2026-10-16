@@ -14,6 +14,7 @@ test/testing-framework/
 # Generated local environment report (contains plaintext credentials)
 /docs/aap-demo-system-info.md
 /docs/aap-demo-system-info.json
+/addons/apme-eap/apme-portal-deployment-*.md
 
 # Linting and pre-commit
 .venv-lint/

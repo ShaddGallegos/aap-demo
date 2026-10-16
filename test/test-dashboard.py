@@ -149,6 +149,8 @@ class DashboardUnitTests(unittest.TestCase):
     def test_dashboard_capacity_markup_and_rendering(self) -> None:
         markup = (REPO_ROOT / "dashboard/static/index.html").read_text(encoding="utf-8")
         script = (REPO_ROOT / "dashboard/static/app.js").read_text(encoding="utf-8")
+        self.assertIn("<h1>Ansible Automation Platform - MicroShift Demo</h1>", markup)
+        self.assertIn("<h2>Environment Overview</h2>", markup)
         self.assertIn('id="capacity-panel"', markup)
         self.assertIn('role="status"', markup)
         self.assertIn("Configured CRC disk", script)

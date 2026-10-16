@@ -21,7 +21,8 @@ EOF
 
 cat >"$TEST_ROOT/fake-aap-demo" <<'EOF'
 #!/usr/bin/env bash
-printf 'cli cwd=%s args=%s\n' "$PWD" "$*" >>"$TEST_LOG"
+printf 'cli cwd=%s args=%s skip_ao=%s quiet=%s\n' \
+  "$PWD" "$*" "${AAP_DEMO_SKIP_STANDARD_AO:-false}" "${QUIET:-false}" >>"$TEST_LOG"
 EOF
 
 chmod +x "$TEST_ROOT/bin/crc" "$TEST_ROOT/bin/groups" "$TEST_ROOT/fake-aap-demo"
@@ -37,7 +38,7 @@ chmod +x "$TEST_ROOT/bin/crc" "$TEST_ROOT/bin/groups" "$TEST_ROOT/fake-aap-demo"
 
 grep -Fx "crc cwd=$REPO_ROOT args=config set preset microshift" "$TEST_ROOT/calls.log"
 grep -Fx "crc cwd=$REPO_ROOT args=setup" "$TEST_ROOT/calls.log"
-grep -Fx "cli cwd=$REPO_ROOT args=deploy" "$TEST_ROOT/calls.log"
+grep -Fx "cli cwd=$REPO_ROOT args=deploy skip_ao=false quiet=false" "$TEST_ROOT/calls.log"
 
 echo "✓ local_prereq_runs_from_resolved_checkout"
 
@@ -102,12 +103,12 @@ cat >"$TEST_ROOT/expected-full-calls.log" <<EOF
 installer cwd=$REPO_ROOT args=
 crc cwd=$REPO_ROOT args=config set preset microshift
 crc cwd=$REPO_ROOT args=setup
-cli cwd=$REPO_ROOT args=deploy
-cli cwd=$REPO_ROOT args=enable mcp-server
-cli cwd=$REPO_ROOT args=enable apme-eap
-cli cwd=$REPO_ROOT args=enable product-demos
-cli cwd=$REPO_ROOT args=enable ao
-cli cwd=$REPO_ROOT args=status
+cli cwd=$REPO_ROOT args=deploy skip_ao=true quiet=false
+cli cwd=$REPO_ROOT args=enable mcp-server skip_ao=false quiet=true
+cli cwd=$REPO_ROOT args=enable apme-eap skip_ao=false quiet=true
+cli cwd=$REPO_ROOT args=enable product-demos skip_ao=false quiet=true
+cli cwd=$REPO_ROOT args=enable ao skip_ao=false quiet=true
+cli cwd=$REPO_ROOT args=status skip_ao=false quiet=false
 EOF
 
 cmp "$TEST_ROOT/expected-full-calls.log" "$TEST_ROOT/full-calls.log"

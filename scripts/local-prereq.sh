@@ -145,15 +145,13 @@ elif [[ "$DEPLOY_AFTER_SETUP" == "true" ]]; then
   cd "$REPO_ROOT"
   if [[ "$FULL_SETUP" == "true" ]]; then
     AAP_DEMO_SKIP_STANDARD_AO=true "$AAP_DEMO_CLI" deploy
-  else
-    "$AAP_DEMO_CLI" deploy
-  fi
-  if [[ "$FULL_SETUP" == "true" ]]; then
     for addon in mcp-server apme-eap product-demos ao; do
       echo "Enabling addon: ${addon}"
       QUIET=true "$AAP_DEMO_CLI" enable "$addon"
     done
     "$AAP_DEMO_CLI" status
+  else
+    "$AAP_DEMO_CLI" deploy
   fi
 else
   echo "Ready. Deploy with:"

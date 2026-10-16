@@ -67,11 +67,12 @@ jobs:
         run: |
           EXIT_CODE=0
           # Find shell scripts with shebangs
-          find . -name "*.sh" -type f | while read -r script; do
+          while read -r script; do
             if head -n 1 "$script" | grep -q '^#!'; then
               if [ ! -x "$script" ]; then
-                echo "::warning file=$script::Script has shebang but is not executable"
+                echo "::error file=$script::Script has shebang but is not executable"
+                EXIT_CODE=1
               fi
             fi
-          done
+          done < <(find . -name "*.sh" -type f)
           exit $EXIT_CODE
