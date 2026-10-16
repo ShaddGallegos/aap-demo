@@ -261,8 +261,8 @@ design, reliability, storage, OLM, addons, and cross-platform support.
 ```bash
 CRC_CPUS=8                   # VM CPU count (default: 8)
 CRC_MEMORY=16384             # VM memory in MiB (default: 16384)
-CRC_DISK=100                 # VM disk size in GiB (default: 100)
-CRC_PV_SIZE=70               # Storage reserved for LVMS PVCs in GiB (default: 70, must be < CRC_DISK)
+CRC_DISK=160                 # Explicit VM disk size in GiB (otherwise adaptive)
+CRC_PV_SIZE=70               # LVMS PVC area (adaptive default, always < CRC_DISK)
 NAMESPACE=aap-operator       # Target namespace
 QUIET=true                   # Suppress disclaimer
 AAP_RESOURCE_PREFLIGHT_STRICT=true  # Fail instead of warn when requested headroom is unavailable
@@ -288,6 +288,27 @@ another port or use `aap-demo dashboard --no-open` to skip opening a browser.
 Deployments and major addons report scheduler-aware CPU and memory headroom before
 installation. Preflight warnings preserve existing behavior by default; set
 `AAP_RESOURCE_PREFLIGHT_STRICT=true` when automation must reject insufficient capacity.
+
+### Disk capacity planning
+
+When `CRC_DISK` is unset, a new cluster is sized from the core AAP estimate plus the
+add-ons saved in `ADDONS`. The canonical model is
+[`config/storage-capacity.json`](config/storage-capacity.json). Its values are conservative
+local-development **planning estimates**, not exact product requirements: core AAP is
+100 GiB, 20 GiB is reserved as safety headroom, add-on allowances are added, and the result
+is rounded up to 10 GiB. `CRC_PV_SIZE` defaults to 70 GiB, or a smaller safe value if needed.
+An explicit `CRC_DISK` or `CRC_PV_SIZE` is preserved exactly and validated.
+
+Before enabling an add-on, aap-demo compares the projected recommendation and incremental
+allowance with current VM capacity. An undersized VM produces a clear warning but the
+enable operation continues; it never resizes or rebuilds the cluster. `status --json`,
+system-info, and the dashboard report actual size/used/free when available, configured and
+recommended sizes, projected add-on sizes, and whether configuration is not applied.
+
+**CRC disk size is applied only when the VM is created.** Changing `CRC_DISK` does not
+resize an existing VM. Applying a larger setting requires a destructive cluster rebuild,
+which this feature never starts automatically. Fleet images/node overlays and the local
+image cache are host-only storage and are reported separately from CRC VM capacity.
 
 ## Troubleshooting
 

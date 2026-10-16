@@ -60,6 +60,8 @@ source "${SCRIPT_DIR}/includes/persistent-crio-store.sh"
 
 # shellcheck source=includes/aap-readiness.sh
 source "${SCRIPT_DIR}/includes/aap-readiness.sh"
+# shellcheck source=includes/storage-capacity.sh
+source "${SCRIPT_DIR}/includes/storage-capacity.sh"
 # shellcheck source=includes/system-inventory.sh
 source "${SCRIPT_DIR}/includes/system-inventory.sh"
 # shellcheck source=includes/system-info-document.sh
@@ -616,6 +618,8 @@ ENVIRONMENT AND OVERRIDES:
     NAMESPACE=name                  AAP namespace (default: aap-operator)
     QUIET=true                      Disable interactive prompts where supported
     FORCE=true                      Force supported reinstall operations
+    CRC_DISK=GiB                    CRC VM disk; otherwise sized from enabled addons
+    CRC_PV_SIZE=GiB                 LVMS PV area; adaptive default stays below CRC_DISK
     AAP_RESOURCE_PREFLIGHT_STRICT=true
                                     Fail preflight on insufficient capacity
     FLEET_NODE_MEM=MB               Memory per Fleet VM (default: 1024)
@@ -632,6 +636,10 @@ ENVIRONMENT AND OVERRIDES:
     AAP_IMAGE_STORE_SIZE_GB  Persistent disk size (default: 60)
     AAP_IMAGE_STORE_FORMAT=true
                         Explicitly format a blank persistent disk once
+
+    CRC disk settings apply only when the VM is created. Existing VMs are
+    never resized or rebuilt automatically; applying a larger value requires
+    an explicitly requested destructive rebuild.
 
 EXAMPLES:
     aap-demo deploy
@@ -3445,6 +3453,7 @@ cmd_enable() {
   printf '  Source: %s (%s)\n' "${addon_dir}/deploy.sh" "$(aap_demo_version_short)"
   if [ "$_skip_cluster_verify" != true ]; then
     _verify_cluster || return 1
+    aap_demo_capacity_warn_enable "$addon" "$(_addons_list)"
     _addon_resource_preflight "$addon" || return 1
   fi
   if [ "$addon" = "ao" ] && [ "$_skip_addon_save" != true ]; then

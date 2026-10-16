@@ -25,6 +25,8 @@ source "${SCRIPT_DIR}/includes/infra-api.sh"
 source "${SCRIPT_DIR}/includes/ingress-ca-trust.sh"
 # shellcheck source=includes/persistent-crio-store.sh
 source "${SCRIPT_DIR}/includes/persistent-crio-store.sh"
+# shellcheck source=includes/storage-capacity.sh
+source "${SCRIPT_DIR}/includes/storage-capacity.sh"
 
 # Colors
 _RED='\033[0;31m'
@@ -350,16 +352,14 @@ if [ "$CRC_STATUS" = "Unknown" ] && [ -t 0 ]; then
   fi
   CRC_MEMORY=$((_input_memory_gb * 1024))
 
-  CRC_DISK="${CRC_DISK:-${VM_DISK_SIZE:-120}}"
-  CRC_PV_SIZE="${CRC_PV_SIZE:-${VM_PV_SIZE:-70}}"
+  aap_demo_capacity_resolve_crc_sizes
 
   _save_config_key "CRC_CPUS" "$CRC_CPUS"
   _save_config_key "CRC_MEMORY" "$CRC_MEMORY"
 else
   CRC_CPUS="${CRC_CPUS:-${VM_CPUS:-${_DEFAULT_CPUS}}}"
   CRC_MEMORY="${CRC_MEMORY:-${VM_MEMORY:-$((_DEFAULT_MEMORY_GB * 1024))}}"
-  CRC_DISK="${CRC_DISK:-${VM_DISK_SIZE:-120}}"
-  CRC_PV_SIZE="${CRC_PV_SIZE:-${VM_PV_SIZE:-70}}"
+  aap_demo_capacity_resolve_crc_sizes
 
   if [ "$(uname -s)" = "Linux" ] && [ "${SKIP_TEMP_SWAP:-false}" != "true" ] && [ "${AAP_ENABLE_TEMP_SWAP:-false}" = "true" ]; then
     # shellcheck source=includes/temp-swap.sh

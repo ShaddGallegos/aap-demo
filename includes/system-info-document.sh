@@ -169,6 +169,20 @@ Generated: \`$(jq -r '.generated_at' "$inventory")\`
 - Load: \`$(jq -r '.cluster.vm.load // "unavailable"' "$inventory")\`
 - Disk: \`$(jq -r '.cluster.vm.disk // "unavailable"' "$inventory")\`
 
+## Storage Capacity Planning
+
+These values are conservative planning estimates, not exact requirements.
+
+- Actual VM disk: \`$(jq -r 'if .storage.capacity_planning.actual_vm_disk_gib then "\(.storage.capacity_planning.actual_vm_used_gib) GiB used / \(.storage.capacity_planning.actual_vm_disk_gib) GiB, \(.storage.capacity_planning.actual_vm_free_gib) GiB free" else "unavailable" end' "$inventory")\`
+- Configured CRC disk: \`$(jq -r 'if .storage.capacity_planning.configured_crc_disk_gib then "\(.storage.capacity_planning.configured_crc_disk_gib) GiB" else "adaptive / not explicitly set" end' "$inventory")\`
+- Recommended for enabled add-ons: \`$(jq -r '"\(.storage.capacity_planning.recommended_vm_disk_gib) GiB"' "$inventory")\`
+- Host-only estimate: \`$(jq -r '"\(.storage.capacity_planning.host_only_gib) GiB"' "$inventory")\`
+- Needs rebuild for recommendation: \`$(jq -r '.storage.capacity_planning.needs_rebuild' "$inventory")\`
+- Config not applied to existing VM: \`$(jq -r '.storage.capacity_planning.configured_not_applied' "$inventory")\`
+
+CRC disk settings apply only at VM creation. A larger setting requires a destructive
+rebuild; aap-demo never resizes or rebuilds automatically.
+
 ## Namespace Health
 
 $(_aap_demo_system_info_namespaces_markdown "$inventory")

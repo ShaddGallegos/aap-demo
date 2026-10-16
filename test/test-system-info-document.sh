@@ -13,6 +13,7 @@ export AAP_DEMO_DIR="$TEST_DIR/state"
 export AO_LLM_PROVIDER=external
 export AO_LLM_BASE_URL=https://llm.example.test/v1
 export AO_LLM_MODEL=test-model
+export CRC_DISK=160
 export AAP_DEMO_GIT_DATE=2026-01-01T00:00:00Z
 export AAP_DEMO_REPO_ROOT="$REPO_ROOT"
 export AAP_DEMO_GIT_BRANCH=test
@@ -39,7 +40,7 @@ _addons_list() {
 }
 
 infra_exec_cmd() {
-  printf 'Test RHEL\t4.22.1\t8\t4Gi\t16Gi\t12Gi\t0.1 0.2 0.3\t10G/50G (20%% used)\n'
+  printf 'Test RHEL\t4.22.1\t8\t4Gi\t16Gi\t12Gi\t0.1 0.2 0.3\t10G/50G (20%% used)\t50\t10\t40\n'
 }
 
 aap_demo_resolve_kubeconfig() {
@@ -119,6 +120,30 @@ omitted_inventory=$(aap_demo_collect_system_inventory omit)
 [ "$(jq -r '.credentials[] | select(.component == "AAP") | .password' <<<"$omitted_inventory")" = "null" ]
 [ "$(jq -r '.addons | join(",")' <<<"$include_inventory")" = "mcp-server,ao" ]
 [ "$(jq -r '.namespaces[] | select(.name == "aap-operator") | .ready' <<<"$include_inventory")" = "true" ]
+[ "$(jq -r '.storage.capacity_planning.actual_vm_disk_gib' <<<"$include_inventory")" = 50 ]
+[ "$(jq -r '.storage.capacity_planning.actual_vm_used_gib' <<<"$include_inventory")" = 10 ]
+[ "$(jq -r '.storage.capacity_planning.actual_vm_free_gib' <<<"$include_inventory")" = 40 ]
+[ "$(jq -r '.storage.capacity_planning.configured_crc_disk_gib' <<<"$include_inventory")" = 160 ]
+[ "$(jq -r '.storage.capacity_planning.recommended_vm_disk_gib' <<<"$include_inventory")" = 150 ]
+[ "$(jq -r '.storage.capacity_planning.needs_rebuild' <<<"$include_inventory")" = true ]
+[ "$(jq -r '.storage.capacity_planning.configured_not_applied' <<<"$include_inventory")" = true ]
+[ "$(jq -r '.storage.capacity_planning.projected_vm_disk_gib.ollama' <<<"$include_inventory")" = 160 ]
+
+unset CRC_DISK VM_DISK_SIZE
+export INFRA_TYPE=crc
+crc() {
+  [ "$*" = "config get disk-size" ] || return 1
+  printf 'disk-size : 120\n'
+}
+crc_storage=$(_aap_demo_inventory_storage "" '{"disk_gib":{}}')
+[ "$(jq -r '.configured_crc_disk_gib' <<<"$crc_storage")" = 120 ]
+
+crc() {
+  printf 'disk-size : 120\n'
+  return 1
+}
+crc_error_storage=$(_aap_demo_inventory_storage "" '{"disk_gib":{}}')
+[ "$(jq -r '.configured_crc_disk_gib' <<<"$crc_error_storage")" = null ]
 
 aap_demo_generate_system_info include markdown "$AAP_DEMO_SYSTEM_INFO_FILE" >/dev/null
 

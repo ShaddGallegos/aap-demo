@@ -193,9 +193,33 @@ p {
 .summary-card,
 .panel,
 .addon-card,
-.operation-panel {
+.operation-panel,
+.capacity-panel {
   border: 1px solid var(--border);
   background: rgb(17 21 29 / 88%);
+}
+
+.capacity-panel {
+  margin-top: 16px;
+  padding: 24px;
+  border-radius: 15px;
+}
+
+.capacity-panel.warning {
+  border-color: rgb(246 195 68 / 55%);
+  background: rgb(246 195 68 / 7%);
+}
+
+.capacity-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.capacity-message {
+  margin: 18px 0 0;
+  line-height: 1.5;
 }
 
 .summary-card {
@@ -362,6 +386,13 @@ p {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.addon-capacity {
+  margin: 0 0 16px;
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 650;
 }
 
 .addon-card .description {
@@ -576,6 +607,7 @@ footer {
 
 @media (max-width: 1050px) {
   .summary-grid,
+  .capacity-grid,
   .addon-grid {
     grid-template-columns: repeat(2, 1fr);
   }
@@ -612,6 +644,7 @@ footer {
   }
 
   .summary-grid,
+  .capacity-grid,
   .addon-grid {
     grid-template-columns: 1fr;
   }

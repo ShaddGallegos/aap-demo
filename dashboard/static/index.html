@@ -37,6 +37,18 @@
 
         <section id="summary-grid" class="summary-grid" aria-label="Environment summary"></section>
 
+        <section id="capacity-panel" class="capacity-panel panel" aria-labelledby="capacity-heading">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">STORAGE PLANNING</p>
+              <h2 id="capacity-heading">CRC VM capacity</h2>
+            </div>
+            <span id="capacity-status" class="pill">Checking</span>
+          </div>
+          <div id="capacity-grid" class="capacity-grid"></div>
+          <p id="capacity-message" class="capacity-message muted" role="status"></p>
+        </section>
+
         <section id="operation-panel" class="operation-panel hidden" aria-live="polite">
           <div class="operation-heading">
             <div>

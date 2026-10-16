@@ -176,6 +176,13 @@ class DashboardApp:
             addon["state"] = addon_state(definition, inventory)
             addon["enabled"] = definition["id"] in enabled
             addon["active_dependencies"] = active_dependencies(definition, inventory)
+            capacity = inventory.get("storage", {}).get("capacity_planning", {})
+            addon["capacity_estimate"] = capacity.get("addon_estimates", {}).get(
+                definition["id"], {}
+            )
+            addon["projected_vm_disk_gib"] = capacity.get(
+                "projected_vm_disk_gib", {}
+            ).get(definition["id"])
             addons.append(addon)
         return {
             "inventory": inventory,

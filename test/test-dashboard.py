@@ -53,6 +53,26 @@ def fixture_inventory() -> dict[str, Any]:
             },
         ],
         "cluster": {"state": "running"},
+        "storage": {
+            "capacity_planning": {
+                "actual_vm_disk_gib": 140,
+                "actual_vm_used_gib": 110,
+                "actual_vm_free_gib": 30,
+                "configured_crc_disk_gib": 160,
+                "recommended_vm_disk_gib": 160,
+                "host_only_gib": 0,
+                "needs_rebuild": True,
+                "configured_not_applied": True,
+                "addon_estimates": {
+                    "mcp-server": {"vm_gib": 3, "host_gib": 0},
+                    "portal": {"vm_gib": 8, "host_gib": 0},
+                },
+                "projected_vm_disk_gib": {
+                    "mcp-server": 160,
+                    "portal": 170,
+                },
+            }
+        },
         "routes": [],
         "namespaces": [],
     }
@@ -126,6 +146,14 @@ class DashboardUnitTests(unittest.TestCase):
             self.assertEqual(snapshot["status"], "succeeded")
             self.assertIn("phase two", snapshot["output"])
 
+    def test_dashboard_capacity_markup_and_rendering(self) -> None:
+        markup = (REPO_ROOT / "dashboard/static/index.html").read_text(encoding="utf-8")
+        script = (REPO_ROOT / "dashboard/static/app.js").read_text(encoding="utf-8")
+        self.assertIn('id="capacity-panel"', markup)
+        self.assertIn('role="status"', markup)
+        self.assertIn("Configured CRC disk", script)
+        self.assertIn("Projected recommendation", script)
+
 
 class DashboardHttpTests(unittest.TestCase):
     @classmethod
@@ -186,6 +214,9 @@ class DashboardHttpTests(unittest.TestCase):
             "running",
         )
         self.assertNotIn("credentials", payload["inventory"])
+        portal = next(addon for addon in payload["addons"] if addon["id"] == "portal")
+        self.assertEqual(portal["projected_vm_disk_gib"], 170)
+        self.assertEqual(portal["capacity_estimate"]["vm_gib"], 8)
 
     def test_mutation_requires_origin_and_session_token(self) -> None:
         status, _ = self.request(

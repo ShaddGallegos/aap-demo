@@ -13,6 +13,10 @@ const elements = {
   alert: document.querySelector("#alert"),
   addonGrid: document.querySelector("#addon-grid"),
   categoryFilter: document.querySelector("#category-filter"),
+  capacityGrid: document.querySelector("#capacity-grid"),
+  capacityMessage: document.querySelector("#capacity-message"),
+  capacityPanel: document.querySelector("#capacity-panel"),
+  capacityStatus: document.querySelector("#capacity-status"),
   clusterIndicator: document.querySelector("#cluster-indicator"),
   clusterState: document.querySelector("#cluster-state"),
   clusterSummary: document.querySelector("#cluster-summary"),
@@ -80,8 +84,13 @@ function renderSummary(inventory) {
   const readyPods = inventory.pods.filter(
     (pod) => pod.phase === "Running" && pod.ready_containers === pod.total_containers,
   ).length;
-  const disk = cluster.vm?.disk || "Unavailable";
-  const diskPercent = Number.parseInt(disk.match(/\((\d+)% used\)/)?.[1] || "0", 10);
+  const capacity = inventory.storage?.capacity_planning || {};
+  const disk = capacity.actual_vm_disk_gib == null
+    ? (cluster.vm?.disk || "Unavailable")
+    : `${capacity.actual_vm_used_gib} / ${capacity.actual_vm_disk_gib} GiB`;
+  const diskPercent = capacity.actual_vm_disk_gib
+    ? Math.round((capacity.actual_vm_used_gib / capacity.actual_vm_disk_gib) * 100)
+    : Number.parseInt(String(disk).match(/\((\d+)% used\)/)?.[1] || "0", 10);
   const diskTone = diskPercent >= 90 ? "critical" : diskPercent >= 80 ? "warning" : "";
   elements.summaryGrid.innerHTML = [
     summaryCard("Namespaces ready", `${healthyNamespaces}/${inventory.namespaces.length}`),
@@ -89,6 +98,44 @@ function renderSummary(inventory) {
     summaryCard("Active routes", inventory.routes.filter((route) => route.admitted).length),
     summaryCard("Disk usage", disk, diskTone),
   ].join("");
+}
+
+function formatGib(value) {
+  return value == null ? "Unavailable" : `${value} GiB`;
+}
+
+function renderCapacity(inventory) {
+  const capacity = inventory.storage?.capacity_planning;
+  if (!capacity) {
+    elements.capacityPanel.classList.add("hidden");
+    return;
+  }
+  elements.capacityPanel.classList.remove("hidden", "warning");
+  const undersized = capacity.needs_rebuild;
+  const pendingConfig = capacity.configured_not_applied;
+  if (undersized || pendingConfig) {
+    elements.capacityPanel.classList.add("warning");
+  }
+  elements.capacityStatus.className = `pill ${undersized || pendingConfig ? "degraded" : "running"}`;
+  elements.capacityStatus.textContent = undersized ? "Undersized" : pendingConfig ? "Config not applied" : "Planned";
+  elements.capacityGrid.innerHTML = [
+    summaryCard("Current VM disk", formatGib(capacity.actual_vm_disk_gib)),
+    summaryCard("VM free", formatGib(capacity.actual_vm_free_gib), undersized ? "critical" : ""),
+    summaryCard("Recommended", formatGib(capacity.recommended_vm_disk_gib), undersized ? "warning" : ""),
+    summaryCard("Host-only estimate", formatGib(capacity.host_only_gib)),
+  ].join("");
+  if (undersized) {
+    elements.capacityMessage.textContent =
+      `This VM is below the ${capacity.recommended_vm_disk_gib} GiB planning recommendation for the enabled add-ons. ` +
+      "CRC disk size is fixed at VM creation; applying a larger setting requires a destructive rebuild, which aap-demo never performs automatically.";
+  } else if (pendingConfig) {
+    elements.capacityMessage.textContent =
+      `Configured CRC disk (${capacity.configured_crc_disk_gib} GiB) does not match the existing VM. ` +
+      "The setting applies only to a newly created VM; no resize or rebuild will be performed automatically.";
+  } else {
+    elements.capacityMessage.textContent =
+      "Conservative planning estimates include safety headroom and are not exact product requirements. Host-only storage is separate from the CRC VM.";
+  }
 }
 
 function renderCategories(addons) {
@@ -129,6 +176,11 @@ function renderAddons(addons) {
         ? `Dependencies: ${addon.active_dependencies.join(", ")}`
         : "No add-on dependencies";
       const availability = addon.availability ? ` · ${addon.availability}` : "";
+      const estimate = addon.capacity_estimate || {};
+      const capacityText = addon.enabled
+        ? `VM allowance: ${estimate.vm_gib ?? 0} GiB`
+        : `Projected recommendation: ${addon.projected_vm_disk_gib ?? "?"} GiB` +
+          (estimate.host_gib ? ` · Host-only: ${estimate.host_gib} GiB` : "");
       const button = addon.enabled
         ? `<button class="button danger" type="button" data-action="disable" data-addon="${addon.id}" ${operationRunning ? "disabled" : ""}>Disable</button>`
         : `<button class="button primary" type="button" data-action="enable" data-addon="${addon.id}" ${operationRunning ? "disabled" : ""}>Enable</button>`;
@@ -141,6 +193,7 @@ function renderAddons(addons) {
           <p class="category">${escapeHtml(addon.category)}</p>
           <p class="description">${escapeHtml(addon.description)}</p>
           <p class="addon-meta">${escapeHtml(dependencies + availability)}</p>
+          <p class="addon-capacity">${escapeHtml(capacityText)}</p>
           <div class="addon-footer">
             <span class="muted">${escapeHtml(addon.id)}</span>
             ${button}
@@ -230,6 +283,7 @@ function renderOperation(operation) {
 function render(payload) {
   state.payload = payload;
   renderSummary(payload.inventory);
+  renderCapacity(payload.inventory);
   renderCategories(payload.addons);
   renderAddons(payload.addons);
   renderRoutes(payload.inventory.routes);

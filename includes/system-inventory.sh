@@ -3,6 +3,9 @@
 if [ -n "${_AAP_DEMO_SYSTEM_INVENTORY_LOADED:-}" ]; then return 0; fi
 _AAP_DEMO_SYSTEM_INVENTORY_LOADED=1
 
+# shellcheck source=includes/storage-capacity.sh
+source "${SCRIPT_DIR}/includes/storage-capacity.sh"
+
 _aap_demo_inventory_ipv4() {
   local host="$1"
   getent ahostsv4 "$host" 2>/dev/null | awk 'NR == 1 { print $1 }' || true
@@ -265,12 +268,13 @@ _aap_demo_inventory_ingress() {
 
 _aap_demo_inventory_vm() {
   local vm_info guest_os openshift cpus memory_used memory_total memory_available load disk
+  local disk_total_gib disk_used_gib disk_free_gib
   if ! declare -F infra_exec_cmd >/dev/null; then
     printf '{}'
     return
   fi
   vm_info=$(infra_exec_cmd bash -c '
-    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
       "$(cat /etc/redhat-release 2>/dev/null || echo unknown)" \
       "$(microshift version 2>/dev/null | awk "/MicroShift Version:/{print \$3}" || rpm -q microshift --qf "%{VERSION}" 2>/dev/null || echo unknown)" \
       "$(nproc 2>/dev/null || echo unknown)" \
@@ -278,9 +282,13 @@ _aap_demo_inventory_vm() {
       "$(free -h | awk "/Mem:/{print \$2}")" \
       "$(free -h | awk "/Mem:/{print \$7}")" \
       "$(awk "{print \$1, \$2, \$3}" /proc/loadavg 2>/dev/null || echo unknown)" \
-      "$(df -h /var 2>/dev/null | awk "NR==2{print \$3\"/\"\$2\" (\"\$5\" used)\"}")"
+      "$(df -h /var 2>/dev/null | awk "NR==2{print \$3\"/\"\$2\" (\"\$5\" used)\"}")" \
+      "$(df -BG --output=size /var 2>/dev/null | tail -n 1 | tr -d " G")" \
+      "$(df -BG --output=used /var 2>/dev/null | tail -n 1 | tr -d " G")" \
+      "$(df -BG --output=avail /var 2>/dev/null | tail -n 1 | tr -d " G")"
   ' 2>/dev/null || true)
-  IFS=$'\t' read -r guest_os openshift cpus memory_used memory_total memory_available load disk <<<"$vm_info"
+  IFS=$'\t' read -r guest_os openshift cpus memory_used memory_total memory_available load disk \
+    disk_total_gib disk_used_gib disk_free_gib <<<"$vm_info"
   jq -cn \
     --arg guest_os "${guest_os:-unknown}" \
     --arg openshift "${openshift:-unknown}" \
@@ -290,6 +298,9 @@ _aap_demo_inventory_vm() {
     --arg memory_available "${memory_available:-unknown}" \
     --arg load "${load:-unknown}" \
     --arg disk "${disk:-unknown}" \
+    --arg disk_total_gib "${disk_total_gib:-}" \
+    --arg disk_used_gib "${disk_used_gib:-}" \
+    --arg disk_free_gib "${disk_free_gib:-}" \
     '{
       guest_os: $guest_os,
       openshift_version: $openshift,
@@ -300,14 +311,75 @@ _aap_demo_inventory_vm() {
         available: $memory_available
       },
       load: $load,
-      disk: $disk
+      disk: $disk,
+      disk_gib: {
+        size: ($disk_total_gib | tonumber?),
+        used: ($disk_used_gib | tonumber?),
+        free: ($disk_free_gib | tonumber?)
+      }
     }'
+}
+
+_aap_demo_inventory_configured_crc_disk() {
+  local output line
+  if [ -n "${CRC_DISK:-}" ]; then
+    printf '%s' "$CRC_DISK"
+    return
+  fi
+  if [ -n "${VM_DISK_SIZE:-}" ]; then
+    printf '%s' "$VM_DISK_SIZE"
+    return
+  fi
+  [ "${INFRA_TYPE:-}" = "crc" ] || return 0
+  command -v crc >/dev/null 2>&1 || return 0
+  output=$(crc config get disk-size 2>/dev/null) || return 0
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^[[:space:]]*disk-size[[:space:]]*:[[:space:]]*([0-9]+)[[:space:]]*$ ]]; then
+      printf '%s' "${BASH_REMATCH[1]}"
+      return
+    fi
+  done <<<"$output"
+}
+
+_aap_demo_inventory_storage() {
+  local addons="$1" vm="$2" plan configured actual used free
+  plan=$(aap_demo_capacity_inventory_plan "$addons")
+  configured=$(_aap_demo_inventory_configured_crc_disk)
+  actual=$(jq -r '.disk_gib.size // empty' <<<"$vm")
+  used=$(jq -r '.disk_gib.used // empty' <<<"$vm")
+  free=$(jq -r '.disk_gib.free // empty' <<<"$vm")
+  jq -cn \
+    --argjson plan "$plan" \
+    --arg configured "$configured" \
+    --arg actual "$actual" \
+    --arg used "$used" \
+    --arg free "$free" '
+      (try ($configured | tonumber) catch null) as $configured_n
+      | (try ($actual | tonumber) catch null) as $actual_n
+      | (try ($used | tonumber) catch null) as $used_n
+      | (try ($free | tonumber) catch null) as $free_n
+      | $plan + {
+          configured_crc_disk_gib: $configured_n,
+          actual_vm_disk_gib: $actual_n,
+          actual_vm_used_gib: $used_n,
+          actual_vm_free_gib: $free_n,
+          needs_rebuild: (
+            $actual_n != null
+            and ($actual_n + 2) < $plan.recommended_vm_disk_gib
+          ),
+          configured_not_applied: (
+            $configured_n != null
+            and $actual_n != null
+            and (($configured_n - $actual_n) | fabs) > 2
+          ),
+          note: "CRC disk configuration is applied only when the VM is created; resizing an existing VM requires a destructive rebuild and is never automatic."
+        }'
 }
 
 aap_demo_collect_system_inventory() {
   local secret_mode="${1:-omit}"
-  local cluster_state cluster_name generated_at addons host_os host_arch context kubernetes_version
-  local namespaces services pods namespace_status routes credentials api_keys ingress vm
+  local cluster_state cluster_name generated_at addons addons_text host_os host_arch context kubernetes_version
+  local namespaces services pods namespace_status routes credentials api_keys ingress vm storage
 
   case "$secret_mode" in
     include | redact | omit) ;;
@@ -323,10 +395,11 @@ aap_demo_collect_system_inventory() {
   host_os=$(grep '^PRETTY_NAME=' /etc/os-release 2>/dev/null | cut -d= -f2- | tr -d '"' || true)
   host_arch=$(uname -m 2>/dev/null || echo "unknown")
   if declare -F _addons_list >/dev/null; then
-    addons=$(_addons_list | jq -Rsc '[scan("\\S+")]')
+    addons_text=$(_addons_list)
   else
-    addons=$(tr ',' '\n' <<<"${ADDONS:-}" | jq -Rsc '[scan("\\S+")]')
+    addons_text=$(tr ',' ' ' <<<"${ADDONS:-}")
   fi
+  addons=$(jq -Rsc '[scan("\\S+")]' <<<"$addons_text")
 
   context="unknown"
   kubernetes_version="unknown"
@@ -339,6 +412,7 @@ aap_demo_collect_system_inventory() {
   api_keys=$(_aap_demo_inventory_api_keys "$secret_mode")
   ingress='{"service":null,"endpoints":[]}'
   vm='{}'
+  storage='{}'
 
   if [ "$cluster_state" = running ] && kubectl cluster-info &>/dev/null; then
     context=$(kubectl config current-context 2>/dev/null || echo "unknown")
@@ -353,6 +427,7 @@ aap_demo_collect_system_inventory() {
     ingress=$(_aap_demo_inventory_ingress)
     vm=$(_aap_demo_inventory_vm)
   fi
+  storage=$(_aap_demo_inventory_storage "$addons_text" "$vm")
 
   jq -cn \
     --arg generated_at "$generated_at" \
@@ -378,6 +453,7 @@ aap_demo_collect_system_inventory() {
     --argjson pods "$pods" \
     --argjson ingress "$ingress" \
     --argjson vm "$vm" \
+    --argjson storage "$storage" \
     '{
       schema_version: 1,
       generated_at: $generated_at,
@@ -401,6 +477,9 @@ aap_demo_collect_system_inventory() {
         kubeconfig: $kubeconfig,
         kubernetes_version: $kubernetes_version,
         vm: $vm
+      },
+      storage: {
+        capacity_planning: $storage
       },
       addons: $addons,
       namespaces: $namespaces,
