@@ -60,6 +60,10 @@ source "${SCRIPT_DIR}/includes/persistent-crio-store.sh"
 
 # shellcheck source=includes/aap-readiness.sh
 source "${SCRIPT_DIR}/includes/aap-readiness.sh"
+# shellcheck source=includes/system-inventory.sh
+source "${SCRIPT_DIR}/includes/system-inventory.sh"
+# shellcheck source=includes/system-info-document.sh
+source "${SCRIPT_DIR}/includes/system-info-document.sh"
 
 # KUBECONFIG is set later by setup_kubeconfig() after argument parsing
 
@@ -113,6 +117,10 @@ KUBECTL_KUBECONFIG=""
 COMMAND=""
 EXTRA_ARGS=()
 PENDING_FLAG=""
+OUTPUT_JSON=false
+REDACT=false
+SYSTEM_INFO_OUTPUT=""
+DASHBOARD_NO_OPEN=false
 
 for arg in "$@"; do
   # Handle pending flag value
@@ -126,6 +134,9 @@ for arg in "$@"; do
         ;;
       kubeconfig)
         KUBECTL_KUBECONFIG="$arg"
+        ;;
+      output)
+        SYSTEM_INFO_OUTPUT="$arg"
         ;;
     esac
     PENDING_FLAG=""
@@ -152,6 +163,21 @@ for arg in "$@"; do
     --kubeconfig)
       PENDING_FLAG="kubeconfig"
       ;;
+    --output=*)
+      SYSTEM_INFO_OUTPUT="${arg#*=}"
+      ;;
+    --output)
+      PENDING_FLAG="output"
+      ;;
+    --json)
+      OUTPUT_JSON=true
+      ;;
+    --redact)
+      REDACT=true
+      ;;
+    --no-open)
+      DASHBOARD_NO_OPEN=true
+      ;;
     status)
       if [ "$COMMAND" = "fleet" ] && [ "${EXTRA_ARGS[0]:-}" = "auth" ]; then
         EXTRA_ARGS+=("$arg")
@@ -177,7 +203,7 @@ for arg in "$@"; do
         exit 1
       fi
       ;;
-    deploy | deploy-all | repair | clean | stop | setup | create | watch | update | config | redeploy | redeploy-all | redhat-status | rh-status | kubeconfig | ssh | idle | preflight | diagnose | must-gather | enable | disable | wire | version | help | --help | -h | --version | -V)
+    deploy | deploy-all | repair | clean | stop | setup | create | watch | update | config | redeploy | redeploy-all | redhat-status | rh-status | kubeconfig | ssh | idle | preflight | diagnose | must-gather | enable | disable | wire | system-info | dashboard | version | help | --help | -h | --version | -V)
       case "$arg" in
         --version | -V) COMMAND="version" ;;
         *) COMMAND="$arg" ;;
@@ -249,6 +275,23 @@ done
 # Check for unprocessed pending flag
 if [ -n "$PENDING_FLAG" ]; then
   echo "ERROR: --$PENDING_FLAG requires a value"
+  exit 1
+fi
+
+if [ "$OUTPUT_JSON" = true ] && [ "$COMMAND" != status ] && [ "$COMMAND" != system-info ]; then
+  echo "ERROR: --json is supported only by status and system-info" >&2
+  exit 1
+fi
+if [ "$REDACT" = true ] && [ "$COMMAND" != system-info ]; then
+  echo "ERROR: --redact is supported only by system-info" >&2
+  exit 1
+fi
+if [ -n "$SYSTEM_INFO_OUTPUT" ] && [ "$COMMAND" != system-info ]; then
+  echo "ERROR: --output is supported only by system-info" >&2
+  exit 1
+fi
+if [ "$DASHBOARD_NO_OPEN" = true ] && [ "$COMMAND" != dashboard ]; then
+  echo "ERROR: --no-open is supported only by dashboard" >&2
   exit 1
 fi
 
@@ -488,6 +531,10 @@ OPTIONS:
     --kubeconfig FILE, --kubeconfig=FILE  Kubeconfig path
     --context NAME, --context=NAME        kubectl context
     --branch NAME, --branch=NAME          Branch used by update
+    --json                                Emit JSON for status or system-info
+    --redact                              Mask secrets in system-info output
+    --output FILE, --output=FILE          Write system-info to a custom path
+    --no-open                             Do not open a browser for dashboard
     --ai                                  Enable AI diagnosis for diagnose
     --reset                               Clear config after destroy
     --skip-cache                          Do not save images during destroy
@@ -501,6 +548,11 @@ OPTIONS:
 CORE COMMANDS:
     deploy | deploy-all             Deploy AAP 2.7; create cluster if needed
     status                          Show cluster, AAP, addons, routes, credentials, Fleet
+    status --json                   Emit machine-readable status without secret values
+    system-info                     Refresh the private Markdown environment report
+    system-info [--redact] [--json] [--output FILE]
+                                    Export redacted, JSON, or custom-path inventory
+    dashboard [--no-open]           Run the localhost add-on management dashboard
     watch                           Watch AAP deployment progress
     clean                           Remove AAP while keeping the cluster
     redeploy                        Clean and redeploy AAP
@@ -584,6 +636,11 @@ ENVIRONMENT AND OVERRIDES:
 EXAMPLES:
     aap-demo deploy
     aap-demo status
+    aap-demo status --json
+    aap-demo system-info
+    aap-demo system-info --redact --output ./aap-support.md
+    aap-demo system-info --json --redact
+    aap-demo dashboard
     aap-demo diagnose
     aap-demo enable fleet
     aap-demo fleet auth
@@ -592,6 +649,7 @@ EXAMPLES:
     aap-demo fleet add 3 --image ~/rhel9.qcow2
     aap-demo fleet register
     aap-demo fleet start
+    aap-demo enable ollama
     AO_LLM_PROVIDER=ollama aap-demo enable ao
     aap-demo wire
     aap-demo enable product-demos
@@ -2053,6 +2111,54 @@ cmd_status() {
   fi
 }
 
+cmd_status_json() {
+  local cluster_state
+  cluster_state=$(infra_get_state 2>/dev/null || echo "not_created")
+  if [ "$cluster_state" = running ]; then
+    if ! setup_kubeconfig >/dev/null; then
+      echo "ERROR: Could not configure Kubernetes access for JSON status" >&2
+      return 1
+    fi
+  fi
+  aap_demo_collect_system_inventory omit | jq .
+}
+
+cmd_system_info() {
+  local cluster_state secret_mode="include" format="markdown" output
+  cluster_state=$(infra_get_state 2>/dev/null || echo "not_created")
+  if [ "$cluster_state" = running ]; then
+    if ! setup_kubeconfig >/dev/null; then
+      echo "ERROR: Could not configure Kubernetes access for system information" >&2
+      return 1
+    fi
+  fi
+
+  [ "$REDACT" = true ] && secret_mode="redact"
+  [ "$OUTPUT_JSON" = true ] && format="json"
+
+  if [ -n "$SYSTEM_INFO_OUTPUT" ]; then
+    output="$SYSTEM_INFO_OUTPUT"
+  elif [ "$OUTPUT_JSON" = true ] || [ "$REDACT" = true ]; then
+    output="-"
+  else
+    output="${AAP_DEMO_SYSTEM_INFO_FILE:-${SCRIPT_DIR}/docs/aap-demo-system-info.md}"
+  fi
+  aap_demo_generate_system_info "$secret_mode" "$format" "$output"
+}
+
+cmd_dashboard() {
+  local dashboard_script="${SCRIPT_DIR}/dashboard/server.py"
+  local args=(--repo-root "$SCRIPT_DIR")
+  if [ ! -f "$dashboard_script" ]; then
+    echo "ERROR: Dashboard server not found: $dashboard_script" >&2
+    return 1
+  fi
+  if [ "$DASHBOARD_NO_OPEN" = true ]; then
+    args+=(--no-open)
+  fi
+  exec python3 "$dashboard_script" "${args[@]}"
+}
+
 cmd_redeploy() {
   # Ensure cluster is accessible (auto-create if needed)
   _verify_cluster || exit 1
@@ -2067,7 +2173,8 @@ cmd_redeploy() {
   echo "Redeploying AAP..."
   echo ""
 
-  deploy_latest
+  deploy_latest || return 1
+  aap_demo_generate_system_info
 }
 
 cmd_redeploy-all() {
@@ -2089,7 +2196,8 @@ cmd_redeploy-all() {
 
   # Addon names survive cluster deletion in ~/.aap-demo/config, but their
   # Kubernetes resources do not. Reinstall them and restore integrations.
-  aap_demo_restore_addons "$saved_addons"
+  aap_demo_restore_addons "$saved_addons" || return 1
+  aap_demo_generate_system_info
 }
 
 _remove_temp_swap() {
@@ -2391,6 +2499,7 @@ cmd_deploy() {
       _patch_gateway_capability
       watch_aap || return 1
       _enable_standard_ao || return 1
+      aap_demo_generate_system_info || return 1
       return 0
     fi
   fi
@@ -2408,7 +2517,8 @@ cmd_deploy() {
 
   # Deploy AAP 2.7
   deploy_latest || return 1
-  _enable_standard_ao
+  _enable_standard_ao || return 1
+  aap_demo_generate_system_info
 }
 
 # -----------------------------------------------------------------------------
@@ -3493,7 +3603,7 @@ _check_for_updates() {
 
 case "$COMMAND" in
   status)
-    _check_for_updates
+    [ "$OUTPUT_JSON" = true ] || _check_for_updates
     ;;
 esac
 
@@ -3503,7 +3613,7 @@ fi
 
 # Setup KUBECONFIG based on infrastructure type (skip for help/config commands)
 case "$COMMAND" in
-  help | --help | -h | config | update | version | "" | destroy | status)
+  help | --help | -h | config | update | version | "" | destroy | status | system-info | dashboard)
     # These commands don't need cluster access
     ;;
   redeploy-all | deploy | deploy-all | redeploy | create | start | preflight)
@@ -3558,7 +3668,17 @@ case "$COMMAND" in
     watch_aap
     ;;
   status)
-    cmd_status
+    if [ "$OUTPUT_JSON" = true ]; then
+      cmd_status_json
+    else
+      cmd_status
+    fi
+    ;;
+  system-info)
+    cmd_system_info
+    ;;
+  dashboard)
+    cmd_dashboard
     ;;
   update)
     cmd_update

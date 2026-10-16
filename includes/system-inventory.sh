@@ -1,0 +1,414 @@
+# shellcheck shell=bash
+
+if [ -n "${_AAP_DEMO_SYSTEM_INVENTORY_LOADED:-}" ]; then return 0; fi
+_AAP_DEMO_SYSTEM_INVENTORY_LOADED=1
+
+_aap_demo_inventory_ipv4() {
+  local host="$1"
+  getent ahostsv4 "$host" 2>/dev/null | awk 'NR == 1 { print $1 }' || true
+}
+
+_aap_demo_inventory_routes() {
+  local raw_routes routes row host ip
+  raw_routes=$(kubectl get route -A -o json 2>/dev/null || printf '{"items":[]}')
+  routes='[]'
+  while IFS= read -r row; do
+    host=$(jq -r '.host' <<<"$row")
+    ip=$(_aap_demo_inventory_ipv4 "$host")
+    routes=$(jq -c --argjson row "$row" --arg ip "$ip" \
+      '. + [$row + {resolved_ipv4: ($ip | select(length > 0) // null)}]' <<<"$routes")
+  done < <(jq -c '
+    .items[]
+    | select(.metadata.namespace | test("^(openshift-|kube-)") | not)
+    | {
+        namespace: .metadata.namespace,
+        name: .metadata.name,
+        host: .spec.host,
+        url: ("https://" + .spec.host),
+        service: .spec.to.name,
+        target_port: (.spec.port.targetPort // null),
+        tls: (.spec.tls.termination // "none"),
+        admitted: ([.status.ingress[]?.conditions[]? | select(.type == "Admitted") | .status] | any(. == "True"))
+      }
+  ' <<<"$raw_routes")
+  printf '%s' "$routes"
+}
+
+_aap_demo_inventory_app_namespaces() {
+  kubectl get namespace -o json 2>/dev/null | jq -c '
+    [
+      .items[].metadata.name
+      | select(
+          . != "default"
+          and . != "olm"
+          and (test("^(openshift-|kube-)") | not)
+        )
+    ]
+    | sort
+  ' 2>/dev/null || printf '[]'
+}
+
+_aap_demo_inventory_services() {
+  local namespaces="$1"
+  kubectl get service -A -o json 2>/dev/null | jq -c --argjson namespaces "$namespaces" '
+    [
+      .items[]
+      | select(.metadata.namespace as $namespace | $namespaces | index($namespace))
+      | {
+          namespace: .metadata.namespace,
+          name: .metadata.name,
+          type: (.spec.type // "ClusterIP"),
+          cluster_ip: (.spec.clusterIP // null),
+          external_ips: (.spec.externalIPs // []),
+          ports: [
+            .spec.ports[]?
+            | {
+                name: (.name // null),
+                port: .port,
+                protocol: (.protocol // "TCP"),
+                target_port: (.targetPort // .port),
+                node_port: (.nodePort // null)
+              }
+          ]
+        }
+    ]
+    | sort_by(.namespace, .name)
+  ' 2>/dev/null || printf '[]'
+}
+
+_aap_demo_inventory_pods() {
+  local namespaces="$1"
+  kubectl get pods -A -o json 2>/dev/null | jq -c --argjson namespaces "$namespaces" '
+    [
+      .items[]
+      | select(.metadata.namespace as $namespace | $namespaces | index($namespace))
+      | select(.status.phase != "Succeeded")
+      | {
+          namespace: .metadata.namespace,
+          name: .metadata.name,
+          phase: (.status.phase // "Unknown"),
+          ready_containers: ([.status.containerStatuses[]? | select(.ready == true)] | length),
+          total_containers: ([.status.containerStatuses[]?] | length),
+          restarts: ([.status.containerStatuses[]?.restartCount] | add // 0),
+          pod_ip: (.status.podIP // null),
+          node: (.spec.nodeName // null)
+        }
+    ]
+    | sort_by(.namespace, .name)
+  ' 2>/dev/null || printf '[]'
+}
+
+_aap_demo_inventory_namespaces() {
+  local namespaces="$1"
+  local pods="$2"
+  jq -cn --argjson namespaces "$namespaces" --argjson pods "$pods" '
+    [
+      $namespaces[] as $namespace
+      | ($pods | map(select(.namespace == $namespace))) as $namespace_pods
+      | select(($namespace_pods | length) > 0)
+      | {
+          name: $namespace,
+          running_pods: ($namespace_pods | map(select(.phase == "Running")) | length),
+          total_pods: ($namespace_pods | length),
+          ready: (
+            ($namespace_pods | length) > 0
+            and ($namespace_pods | all(.phase == "Running" and .ready_containers == .total_containers))
+          )
+        }
+    ]
+  '
+}
+
+_aap_demo_inventory_secret_value() {
+  local namespace="$1"
+  local secret="$2"
+  local key="$3"
+  local mode="$4"
+  local value
+
+  case "$mode" in
+    include)
+      value=$(kubectl get secret "$secret" -n "$namespace" \
+        -o "jsonpath={.data.${key}}" 2>/dev/null | base64 -d 2>/dev/null || true)
+      [ -n "$value" ] && printf '%s' "$value" || printf 'null'
+      ;;
+    redact) printf '******' ;;
+    omit) printf 'null' ;;
+    *)
+      echo "ERROR: Unsupported inventory secret mode: $mode" >&2
+      return 1
+      ;;
+  esac
+}
+
+_aap_demo_inventory_credentials() {
+  local mode="$1"
+  local aap_json credentials item namespace secret password ao_password
+  aap_json=$(kubectl get aap -A -o json 2>/dev/null || printf '{"items":[]}')
+  credentials='[]'
+
+  while IFS= read -r item; do
+    namespace=$(jq -r '.namespace' <<<"$item")
+    secret=$(jq -r '.secret // empty' <<<"$item")
+    if [ -z "$secret" ]; then
+      for secret in myaap-admin-password aap-admin-password aap-controller-admin-password custom-admin-password; do
+        kubectl get secret "$secret" -n "$namespace" &>/dev/null && break
+      done
+    fi
+    password=$(_aap_demo_inventory_secret_value "$namespace" "$secret" password "$mode")
+    credentials=$(jq -c \
+      --arg component "AAP" \
+      --arg namespace "$namespace" \
+      --arg username "admin" \
+      --arg secret "$secret" \
+      --arg password "$password" \
+      '. + [{
+        component: $component,
+        namespace: $namespace,
+        username: $username,
+        secret_name: $secret,
+        password: (if $password == "null" then null else $password end)
+      }]' <<<"$credentials")
+  done < <(jq -c '
+    .items[]
+    | {
+        namespace: .metadata.namespace,
+        secret: (.status.adminPasswordSecret // null)
+      }
+  ' <<<"$aap_json")
+
+  if kubectl get namespace automation-orchestrator &>/dev/null; then
+    secret="automation-orchestrator-initial-admin-password"
+    ao_password=$(_aap_demo_inventory_secret_value automation-orchestrator "$secret" password "$mode")
+    credentials=$(jq -c \
+      --arg component "Automation Orchestrator" \
+      --arg namespace "automation-orchestrator" \
+      --arg username "admin" \
+      --arg secret "$secret" \
+      --arg password "$ao_password" \
+      '. + [{
+        component: $component,
+        namespace: $namespace,
+        username: $username,
+        secret_name: $secret,
+        password: (if $password == "null" then null else $password end)
+      }]' <<<"$credentials")
+  fi
+  printf '%s' "$credentials"
+}
+
+_aap_demo_inventory_api_keys() {
+  local mode="$1"
+  local api_key="null"
+  if [ "${AO_LLM_PROVIDER:-}" = external ]; then
+    case "$mode" in
+      include)
+        api_key=$(aap_demo_ao_llm_read_key 2>/dev/null || true)
+        [ -n "$api_key" ] || api_key="null"
+        ;;
+      redact) api_key="******" ;;
+    esac
+  fi
+  jq -cn \
+    --arg provider "${AO_LLM_PROVIDER:-not configured}" \
+    --arg base_url "${AO_LLM_BASE_URL:-}" \
+    --arg model "${AO_LLM_MODEL:-}" \
+    --arg api_key "$api_key" \
+    '{
+      ao_llm: {
+        provider: $provider,
+        base_url: ($base_url | select(length > 0) // null),
+        model: ($model | select(length > 0) // null),
+        api_key: (if $api_key == "null" then null else $api_key end)
+      },
+      aap_mcp: {
+        oauth_token: null,
+        note: "Generated for client configuration but not persisted by aap-demo"
+      }
+    }'
+}
+
+_aap_demo_inventory_ingress() {
+  local service endpoints
+  service=$(kubectl get service router-default -n openshift-ingress -o json 2>/dev/null \
+    | jq -c '{
+        name: .metadata.name,
+        cluster_ip: (.spec.clusterIP // null),
+        external_ips: (
+          [(.status.loadBalancer.ingress[]?.ip), (.spec.externalIPs[]?)]
+          | map(select(. != null))
+          | unique
+        ),
+        ports: [
+          .spec.ports[]?
+          | {
+              port: .port,
+              protocol: (.protocol // "TCP"),
+              node_port: (.nodePort // null)
+            }
+        ]
+      }' 2>/dev/null || printf 'null')
+  endpoints=$(kubectl get endpoints router-default -n openshift-ingress -o json 2>/dev/null \
+    | jq -c '[
+        .subsets[]?
+        | .addresses[]? as $address
+        | .ports[]?
+        | {
+            ip: $address.ip,
+            port: .port,
+            protocol: (.protocol // "TCP")
+          }
+      ]' 2>/dev/null || printf '[]')
+  jq -cn --argjson service "$service" --argjson endpoints "$endpoints" \
+    '{service: $service, endpoints: $endpoints}'
+}
+
+_aap_demo_inventory_vm() {
+  local vm_info guest_os openshift cpus memory_used memory_total memory_available load disk
+  if ! declare -F infra_exec_cmd >/dev/null; then
+    printf '{}'
+    return
+  fi
+  vm_info=$(infra_exec_cmd bash -c '
+    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+      "$(cat /etc/redhat-release 2>/dev/null || echo unknown)" \
+      "$(microshift version 2>/dev/null | awk "/MicroShift Version:/{print \$3}" || rpm -q microshift --qf "%{VERSION}" 2>/dev/null || echo unknown)" \
+      "$(nproc 2>/dev/null || echo unknown)" \
+      "$(free -h | awk "/Mem:/{print \$3}")" \
+      "$(free -h | awk "/Mem:/{print \$2}")" \
+      "$(free -h | awk "/Mem:/{print \$7}")" \
+      "$(awk "{print \$1, \$2, \$3}" /proc/loadavg 2>/dev/null || echo unknown)" \
+      "$(df -h /var 2>/dev/null | awk "NR==2{print \$3\"/\"\$2\" (\"\$5\" used)\"}")"
+  ' 2>/dev/null || true)
+  IFS=$'\t' read -r guest_os openshift cpus memory_used memory_total memory_available load disk <<<"$vm_info"
+  jq -cn \
+    --arg guest_os "${guest_os:-unknown}" \
+    --arg openshift "${openshift:-unknown}" \
+    --arg cpus "${cpus:-unknown}" \
+    --arg memory_used "${memory_used:-unknown}" \
+    --arg memory_total "${memory_total:-unknown}" \
+    --arg memory_available "${memory_available:-unknown}" \
+    --arg load "${load:-unknown}" \
+    --arg disk "${disk:-unknown}" \
+    '{
+      guest_os: $guest_os,
+      openshift_version: $openshift,
+      cpus: $cpus,
+      memory: {
+        used: $memory_used,
+        total: $memory_total,
+        available: $memory_available
+      },
+      load: $load,
+      disk: $disk
+    }'
+}
+
+aap_demo_collect_system_inventory() {
+  local secret_mode="${1:-omit}"
+  local cluster_state cluster_name generated_at addons host_os host_arch context kubernetes_version
+  local namespaces services pods namespace_status routes credentials api_keys ingress vm
+
+  case "$secret_mode" in
+    include | redact | omit) ;;
+    *)
+      echo "ERROR: Secret mode must be include, redact, or omit" >&2
+      return 1
+      ;;
+  esac
+
+  cluster_state=$(infra_get_state 2>/dev/null || echo "not_created")
+  cluster_name=$(infra_get_name 2>/dev/null || echo "")
+  generated_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  host_os=$(grep '^PRETTY_NAME=' /etc/os-release 2>/dev/null | cut -d= -f2- | tr -d '"' || true)
+  host_arch=$(uname -m 2>/dev/null || echo "unknown")
+  if declare -F _addons_list >/dev/null; then
+    addons=$(_addons_list | jq -Rsc '[scan("\\S+")]')
+  else
+    addons=$(tr ',' '\n' <<<"${ADDONS:-}" | jq -Rsc '[scan("\\S+")]')
+  fi
+
+  context="unknown"
+  kubernetes_version="unknown"
+  namespaces='[]'
+  services='[]'
+  pods='[]'
+  namespace_status='[]'
+  routes='[]'
+  credentials='[]'
+  api_keys=$(_aap_demo_inventory_api_keys "$secret_mode")
+  ingress='{"service":null,"endpoints":[]}'
+  vm='{}'
+
+  if [ "$cluster_state" = running ] && kubectl cluster-info &>/dev/null; then
+    context=$(kubectl config current-context 2>/dev/null || echo "unknown")
+    kubernetes_version=$(kubectl version -o json 2>/dev/null \
+      | jq -r '.serverVersion.gitVersion // "unknown"' 2>/dev/null || echo "unknown")
+    namespaces=$(_aap_demo_inventory_app_namespaces)
+    services=$(_aap_demo_inventory_services "$namespaces")
+    pods=$(_aap_demo_inventory_pods "$namespaces")
+    namespace_status=$(_aap_demo_inventory_namespaces "$namespaces" "$pods")
+    routes=$(_aap_demo_inventory_routes)
+    credentials=$(_aap_demo_inventory_credentials "$secret_mode")
+    ingress=$(_aap_demo_inventory_ingress)
+    vm=$(_aap_demo_inventory_vm)
+  fi
+
+  jq -cn \
+    --arg generated_at "$generated_at" \
+    --arg secret_mode "$secret_mode" \
+    --arg tool_version "$(aap_demo_version_short)" \
+    --arg built "$AAP_DEMO_GIT_DATE" \
+    --arg source "$AAP_DEMO_REPO_ROOT" \
+    --arg branch "$AAP_DEMO_GIT_BRANCH" \
+    --arg repo "$AAP_DEMO_GIT_REMOTE" \
+    --arg host_os "${host_os:-unknown}" \
+    --arg host_arch "$host_arch" \
+    --arg cluster_name "$cluster_name" \
+    --arg cluster_state "$cluster_state" \
+    --arg context "$context" \
+    --arg kubeconfig "${KUBECONFIG:-$(aap_demo_resolve_kubeconfig)}" \
+    --arg kubernetes_version "$kubernetes_version" \
+    --argjson addons "$addons" \
+    --argjson namespaces "$namespace_status" \
+    --argjson routes "$routes" \
+    --argjson credentials "$credentials" \
+    --argjson api_keys "$api_keys" \
+    --argjson services "$services" \
+    --argjson pods "$pods" \
+    --argjson ingress "$ingress" \
+    --argjson vm "$vm" \
+    '{
+      schema_version: 1,
+      generated_at: $generated_at,
+      secret_mode: $secret_mode,
+      tool: {
+        version: $tool_version,
+        built: $built,
+        source: $source,
+        branch: $branch,
+        repository: ($repo | select(length > 0) // null)
+      },
+      host: {
+        os: $host_os,
+        architecture: $host_arch
+      },
+      cluster: {
+        infrastructure: "OpenShift Local (CRC/MicroShift)",
+        name: ($cluster_name | select(length > 0) // null),
+        state: $cluster_state,
+        context: $context,
+        kubeconfig: $kubeconfig,
+        kubernetes_version: $kubernetes_version,
+        vm: $vm
+      },
+      addons: $addons,
+      namespaces: $namespaces,
+      routes: $routes,
+      credentials: $credentials,
+      api_keys: $api_keys,
+      services: $services,
+      pods: $pods,
+      ingress: $ingress
+    }'
+}

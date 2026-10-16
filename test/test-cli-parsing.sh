@@ -64,10 +64,32 @@ fi
 
 echo "PASS: fleet start remains a nested subcommand"
 
+if output=$(QUIET=true "$AAP_DEMO_SH" version --json 2>&1); then
+  echo "FAIL: version accepted the status/system-info --json option"
+  exit 1
+fi
+if ! grep -q -- "--json is supported only by status and system-info" <<<"$output"; then
+  echo "FAIL: invalid --json usage did not produce an actionable error"
+  echo "$output"
+  exit 1
+fi
+
+if output=$(QUIET=true "$AAP_DEMO_SH" system-info --output 2>&1); then
+  echo "FAIL: system-info accepted --output without a path"
+  exit 1
+fi
+if ! grep -q -- "--output requires a value" <<<"$output"; then
+  echo "FAIL: missing --output value did not produce an actionable error"
+  echo "$output"
+  exit 1
+fi
+
+echo "PASS: structured-output options are validated"
+
 help_output=$(QUIET=true "$AAP_DEMO_SH" --help)
 for command in deploy status watch clean redeploy redeploy-all idle preflight diagnose \
   must-gather wire config redhat-status update version help create destroy stop start \
-  repair setup ssh kubeconfig; do
+  repair setup ssh kubeconfig system-info dashboard; do
   if ! grep -Eq "^[[:space:]]+${command}([[:space:]|]|\$)" <<<"$help_output"; then
     echo "FAIL: --help is missing command: $command"
     exit 1
@@ -90,6 +112,9 @@ for text in \
   "fleet destroy" \
   "--refresh-catalog" \
   "--purge-data" \
+  "status --json" \
+  "system-info [--redact] [--json] [--output FILE]" \
+  "dashboard [--no-open]" \
   "AO_LLM_PROVIDER=ollama|external|none" \
   "aap-demo fleet add 3 --image rhel9" \
   "aap-demo redeploy-all"; do

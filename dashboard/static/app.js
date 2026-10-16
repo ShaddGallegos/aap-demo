@@ -1,0 +1,332 @@
+"use strict";
+
+const state = {
+  sessionToken: "",
+  payload: null,
+  activeCategory: "All",
+  polling: null,
+  dismissedOperationId: null,
+  dismissTimer: null,
+};
+
+const elements = {
+  alert: document.querySelector("#alert"),
+  addonGrid: document.querySelector("#addon-grid"),
+  categoryFilter: document.querySelector("#category-filter"),
+  clusterIndicator: document.querySelector("#cluster-indicator"),
+  clusterState: document.querySelector("#cluster-state"),
+  clusterSummary: document.querySelector("#cluster-summary"),
+  lastUpdated: document.querySelector("#last-updated"),
+  namespaceList: document.querySelector("#namespace-list"),
+  operationDetails: document.querySelector("#operation-details"),
+  operationDismiss: document.querySelector("#operation-dismiss"),
+  operationMessage: document.querySelector("#operation-message"),
+  operationOutput: document.querySelector("#operation-output"),
+  operationPanel: document.querySelector("#operation-panel"),
+  operationStatus: document.querySelector("#operation-status"),
+  refreshButton: document.querySelector("#refresh-button"),
+  routesList: document.querySelector("#routes-list"),
+  summaryGrid: document.querySelector("#summary-grid"),
+};
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(state.sessionToken ? {"X-AAP-Demo-Token": state.sessionToken} : {}),
+      ...(options.headers || {}),
+    },
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `Request failed with status ${response.status}`);
+  }
+  return payload;
+}
+
+function showAlert(message) {
+  elements.alert.textContent = message;
+  elements.alert.classList.remove("hidden");
+}
+
+function clearAlert() {
+  elements.alert.textContent = "";
+  elements.alert.classList.add("hidden");
+}
+
+function summaryCard(label, value, tone = "") {
+  return `<article class="summary-card ${escapeHtml(tone)}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>`;
+}
+
+function renderSummary(inventory) {
+  const cluster = inventory.cluster;
+  const running = cluster.state === "running";
+  elements.clusterIndicator.className = `status-dot ${running ? "running" : "stopped"}`;
+  elements.clusterState.textContent = running ? "Cluster running" : `Cluster ${cluster.state}`;
+  elements.clusterSummary.textContent =
+    `${cluster.name || "Local cluster"} · Kubernetes ${cluster.kubernetes_version} · ${inventory.host.architecture}`;
+
+  const healthyNamespaces = inventory.namespaces.filter((namespace) => namespace.ready).length;
+  const readyPods = inventory.pods.filter(
+    (pod) => pod.phase === "Running" && pod.ready_containers === pod.total_containers,
+  ).length;
+  const disk = cluster.vm?.disk || "Unavailable";
+  const diskPercent = Number.parseInt(disk.match(/\((\d+)% used\)/)?.[1] || "0", 10);
+  const diskTone = diskPercent >= 90 ? "critical" : diskPercent >= 80 ? "warning" : "";
+  elements.summaryGrid.innerHTML = [
+    summaryCard("Namespaces ready", `${healthyNamespaces}/${inventory.namespaces.length}`),
+    summaryCard("Pods ready", `${readyPods}/${inventory.pods.length}`),
+    summaryCard("Active routes", inventory.routes.filter((route) => route.admitted).length),
+    summaryCard("Disk usage", disk, diskTone),
+  ].join("");
+}
+
+function renderCategories(addons) {
+  const categories = ["All", ...new Set(addons.map((addon) => addon.category))];
+  elements.categoryFilter.innerHTML = categories
+    .map(
+      (category) =>
+        `<button class="filter-button ${category === state.activeCategory ? "active" : ""}" ` +
+        `type="button" data-category="${escapeHtml(category)}">${escapeHtml(category)}</button>`,
+    )
+    .join("");
+  elements.categoryFilter.querySelectorAll("button").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.activeCategory = button.dataset.category;
+      renderCategories(addons);
+      renderAddons(addons);
+    });
+  });
+}
+
+function stateLabel(addonState) {
+  return {
+    running: "Running",
+    enabled: "Configured",
+    degraded: "Needs attention",
+    disabled: "Disabled",
+  }[addonState] || "Unknown";
+}
+
+function renderAddons(addons) {
+  const operationRunning = state.payload?.operation?.status === "running";
+  const filtered = addons.filter(
+    (addon) => state.activeCategory === "All" || addon.category === state.activeCategory,
+  );
+  elements.addonGrid.innerHTML = filtered
+    .map((addon) => {
+      const dependencies = addon.active_dependencies?.length
+        ? `Dependencies: ${addon.active_dependencies.join(", ")}`
+        : "No add-on dependencies";
+      const availability = addon.availability ? ` · ${addon.availability}` : "";
+      const button = addon.enabled
+        ? `<button class="button danger" type="button" data-action="disable" data-addon="${addon.id}" ${operationRunning ? "disabled" : ""}>Disable</button>`
+        : `<button class="button primary" type="button" data-action="enable" data-addon="${addon.id}" ${operationRunning ? "disabled" : ""}>Enable</button>`;
+      return `
+        <article class="addon-card">
+          <div class="addon-heading">
+            <h3>${escapeHtml(addon.name)}</h3>
+            <span class="pill ${escapeHtml(addon.state)}">${escapeHtml(stateLabel(addon.state))}</span>
+          </div>
+          <p class="category">${escapeHtml(addon.category)}</p>
+          <p class="description">${escapeHtml(addon.description)}</p>
+          <p class="addon-meta">${escapeHtml(dependencies + availability)}</p>
+          <div class="addon-footer">
+            <span class="muted">${escapeHtml(addon.id)}</span>
+            ${button}
+          </div>
+        </article>`;
+    })
+    .join("");
+  elements.addonGrid.querySelectorAll("button[data-action]").forEach((button) => {
+    button.addEventListener("click", () => toggleAddon(button.dataset.addon, button.dataset.action));
+  });
+}
+
+function renderRoutes(routes) {
+  if (!routes.length) {
+    elements.routesList.innerHTML = '<p class="empty-state">No application routes found.</p>';
+    return;
+  }
+  elements.routesList.innerHTML = routes
+    .map(
+      (route) => `
+        <div class="route-row">
+          <div>
+            <a href="${escapeHtml(route.url)}" target="_blank" rel="noreferrer">${escapeHtml(route.url)}</a>
+            <span class="route-name">${escapeHtml(route.namespace)} / ${escapeHtml(route.name)}</span>
+          </div>
+          <span class="pill ${route.admitted ? "running" : "degraded"}">${route.admitted ? "Admitted" : "Pending"}</span>
+        </div>`,
+    )
+    .join("");
+}
+
+function renderNamespaces(namespaces) {
+  if (!namespaces.length) {
+    elements.namespaceList.innerHTML = '<p class="empty-state">No application namespaces found.</p>';
+    return;
+  }
+  elements.namespaceList.innerHTML = namespaces
+    .map(
+      (namespace) => `
+        <div class="namespace-row">
+          <div>
+            <div class="namespace-name">${escapeHtml(namespace.name)}</div>
+            <div class="namespace-count">${namespace.running_pods}/${namespace.total_pods} running</div>
+          </div>
+          <span class="pill ${namespace.ready ? "running" : "degraded"}">${namespace.ready ? "Ready" : "Attention"}</span>
+        </div>`,
+    )
+    .join("");
+}
+
+function renderOperation(operation) {
+  if (
+    !operation ||
+    operation.status === "idle" ||
+    (operation.id === state.dismissedOperationId && operation.status !== "running")
+  ) {
+    elements.operationPanel.className = "operation-panel hidden";
+    return;
+  }
+  elements.operationPanel.className = "operation-panel";
+  if (operation.status === "succeeded") {
+    elements.operationPanel.classList.add("complete");
+  } else if (operation.status === "failed") {
+    elements.operationPanel.classList.add("failed");
+  }
+  elements.operationMessage.textContent = operation.message;
+  elements.operationStatus.textContent = operation.status;
+  elements.operationStatus.className =
+    `pill ${operation.status === "running" ? "running-operation" : operation.status === "succeeded" ? "running" : "degraded"}`;
+  elements.operationDismiss.classList.toggle("hidden", operation.status === "running");
+  if (operation.output) {
+    elements.operationOutput.textContent = operation.output;
+    elements.operationDetails.classList.remove("hidden");
+  } else {
+    elements.operationOutput.textContent = "";
+    elements.operationDetails.classList.add("hidden");
+  }
+  if (operation.status === "succeeded" && !state.dismissTimer) {
+    state.dismissTimer = window.setTimeout(() => {
+      state.dismissedOperationId = operation.id;
+      state.dismissTimer = null;
+      renderOperation(operation);
+    }, 12000);
+  }
+}
+
+function render(payload) {
+  state.payload = payload;
+  renderSummary(payload.inventory);
+  renderCategories(payload.addons);
+  renderAddons(payload.addons);
+  renderRoutes(payload.inventory.routes);
+  renderNamespaces(payload.inventory.namespaces);
+  renderOperation(payload.operation);
+  elements.lastUpdated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+}
+
+async function refresh() {
+  elements.refreshButton.disabled = true;
+  try {
+    const payload = await api("/api/status");
+    clearAlert();
+    render(payload);
+  } catch (error) {
+    showAlert(error.message);
+  } finally {
+    elements.refreshButton.disabled = false;
+  }
+}
+
+async function toggleAddon(addonId, action) {
+  if (action === "disable") {
+    const confirmed = window.confirm(
+      `Disable ${addonId}? Workloads will be removed, but retained data and credentials will be preserved where supported.`,
+    );
+    if (!confirmed) {
+      return;
+    }
+  }
+  clearAlert();
+  try {
+    state.dismissedOperationId = null;
+    if (state.dismissTimer) {
+      clearTimeout(state.dismissTimer);
+      state.dismissTimer = null;
+    }
+    await api(`/api/addons/${encodeURIComponent(addonId)}/${action}`, {
+      method: "POST",
+      body: JSON.stringify({confirm: action === "disable"}),
+    });
+    await refresh();
+    startOperationPolling();
+  } catch (error) {
+    showAlert(error.message);
+  }
+}
+
+function startOperationPolling() {
+  if (state.polling) {
+    clearInterval(state.polling);
+  }
+  state.polling = window.setInterval(async () => {
+    try {
+      const operation = await api("/api/operation");
+      renderOperation(operation);
+      if (operation.status !== "running") {
+        clearInterval(state.polling);
+        state.polling = null;
+        await refresh();
+      }
+    } catch (error) {
+      showAlert(error.message);
+    }
+  }, 2000);
+}
+
+async function initialize() {
+  try {
+    const session = await api("/api/session");
+    state.sessionToken = session.token;
+    await refresh();
+    if (state.payload?.operation?.status === "running") {
+      startOperationPolling();
+    }
+    window.setInterval(() => {
+      if (!state.polling) {
+        refresh();
+      }
+    }, 15000);
+  } catch (error) {
+    showAlert(error.message);
+  }
+}
+
+elements.refreshButton.addEventListener("click", refresh);
+elements.operationDismiss.addEventListener("click", () => {
+  const operation = state.payload?.operation;
+  if (operation) {
+    state.dismissedOperationId = operation.id;
+    renderOperation(operation);
+  }
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    refresh();
+  }
+});
+window.addEventListener("focus", refresh);
+initialize();

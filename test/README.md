@@ -5,26 +5,11 @@ Validation tests for `aap-demo.sh` command-line interface.
 ## Usage
 
 ```bash
-# Run the shell and Python test scripts used by CI
+# Run every non-live shell and Python unit test used by CI
+./test/run-unit-tests.sh
+
+# Run an individual test
 ./test/test-core-commands.sh
-./test/test-reliability-foundation.sh
-./test/test-aap-readiness.sh
-./test/test-cli-parsing.sh
-./test/test-ingress-ca-export.sh
-./test/test-fleet-auth.sh
-./test/test-fleet-cli.sh
-./test/test-fleet-images.sh
-./test/test-fleet-aap.sh
-./test/test-fleet-subscription.sh
-./test/test-credential-vault-migration.sh
-./test/test-addon-restore.sh
-python3 ./test/test-ao-import-demos.py
-
-# AAP provisioning fast-path test
-python3 ./test/test-provision-aap-demos.py
-
-# AO replica profile rendering (no cluster required)
-./test/test-ao-replica-profile.sh
 ```
 
 ### Coverage

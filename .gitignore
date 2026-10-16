@@ -11,6 +11,10 @@ test/testing-framework/
 .tokensave/
 .serena/
 
+# Generated local environment report (contains plaintext credentials)
+/docs/aap-demo-system-info.md
+/docs/aap-demo-system-info.json
+
 # Linting and pre-commit
 .venv-lint/
 .pre-commit-cache/

@@ -54,6 +54,9 @@ export KUBECONFIG=~/.aap-demo/kubeconfig.microshift
 ```bash
 aap-demo version       # Tool version, commit, and build timestamp
 aap-demo status        # Show routes and credentials
+aap-demo status --json # Machine-readable inventory without secret values
+aap-demo system-info   # Refresh the private environment report
+aap-demo dashboard     # Open the localhost add-on management dashboard
 aap-demo preflight     # Read-only prerequisite and capacity checks
 ```
 
@@ -212,6 +215,11 @@ aap-demo deploy              # Deploy AAP 2.7 and Automation Orchestrator
 
 # Cluster management
 aap-demo status              # Show cluster status, routes, credentials
+aap-demo status --json       # Emit machine-readable status without secret values
+aap-demo system-info         # Refresh docs/aap-demo-system-info.md (mode 0600)
+aap-demo system-info --redact --output /tmp/aap-support.md
+aap-demo system-info --json --redact
+aap-demo dashboard           # Manage add-ons and view live health at 127.0.0.1
 aap-demo stop                # Stop the cluster
 aap-demo start               # Start the cluster and wait for the AAP catalog to recover
 aap-demo ssh                 # SSH into the cluster node
@@ -264,6 +272,18 @@ AAP_RESOURCE_PREFLIGHT_SKIP=true    # Skip CPU/memory headroom checks
 Mutating commands acquire `~/.aap-demo/operation.lock`, preventing concurrent lifecycle
 or addon changes from racing. Stale locks are removed automatically when their owning
 process no longer exists. Read-only commands such as `status` and `diagnose` do not lock.
+
+`system-info` writes an ignored, mode `0600` Markdown report containing local credentials,
+routes, IP addresses, ports, health, and API configuration. Use `--redact` before sharing
+the output. `system-info --json` includes secrets unless combined with `--redact`;
+`status --json` always omits secret values.
+
+`dashboard` starts a dependency-free local web interface on `127.0.0.1:8765`. It displays
+cluster, route, namespace, and add-on health and uses the existing `enable` and `disable`
+commands for changes. Disable actions require confirmation and preserve retained data and
+credentials by default. The server accepts mutations only from its own origin with a
+per-session token and never returns secret values. Set `AAP_DEMO_DASHBOARD_PORT` to choose
+another port or use `aap-demo dashboard --no-open` to skip opening a browser.
 
 Deployments and major addons report scheduler-aware CPU and memory headroom before
 installation. Preflight warnings preserve existing behavior by default; set
