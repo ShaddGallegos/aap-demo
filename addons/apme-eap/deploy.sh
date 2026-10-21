@@ -775,9 +775,9 @@ show_routes() {
     info "Portal Access:"
     info "  URL:      https://${apme_route}"
     info "  Username: admin"
-    info "  Password: ${AAP_PASSWORD}"
+    info "  Password: hidden (run 'aap-demo status --show-secrets' in a terminal)"
     info ""
-    info "  (Uses AAP OAuth - login with AAP admin credentials shown above)"
+    info "  (Uses AAP OAuth)"
   else
     warn "Portal route not found yet - may still be deploying"
   fi

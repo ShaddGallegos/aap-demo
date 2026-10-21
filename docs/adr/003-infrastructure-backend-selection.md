@@ -44,8 +44,8 @@ Selection persists as `CRC_PRESET` in `~/.aap-demo/config`.
 |---------|---------|--------------|
 | CPUs | 8 | `CRC_CPUS` |
 | Memory | 16 GiB | `CRC_MEMORY` |
-| Disk | 100 GiB | `CRC_DISK` |
-| LVMS PV reservation | 70 GiB | `CRC_PV_SIZE` |
+| Disk | 50 GiB (interactive) | `CRC_DISK` |
+| LVMS PV reservation | Derived from disk size | `CRC_PV_SIZE` |
 
 ### Backend abstraction
 

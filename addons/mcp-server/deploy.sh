@@ -20,6 +20,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../../includes/secure-curl.sh
+source "${SCRIPT_DIR}/../../includes/secure-curl.sh"
 NAMESPACE="${NAMESPACE:-aap-operator}"
 
 ACTION="${1:-deploy}"

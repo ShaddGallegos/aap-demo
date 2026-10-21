@@ -5,10 +5,11 @@ automatically by `aap-demo` unless noted below.
 
 ## Host preparation (Linux + CRC)
 
-### Interactive temp swap (`aap-demo create`)
+### Interactive resources (`aap-demo create`)
 
 On **Linux (Fedora/RHEL)**, the first interactive cluster create prompts for a
-temporary swap file before CPU and RAM allocation.
+temporary swap file before CPU, RAM, and VM disk allocation. macOS and Windows
+use the same disk-size choices without the Linux swap prompt.
 
 ```text
 Resource allocation for CRC VM:
@@ -18,7 +19,16 @@ Resource allocation for CRC VM:
   Temp swap size in GB [16]:
   CPUs [8]:
   Memory in GB [16]:
+  Disk size:
+    1) 50 GB
+    2) 100 GB
+    3) 150 GB
+    4) 200 GB
+  Choice [1]:
 ```
+
+The disk choice is applied before CRC starts and persists in `~/.aap-demo/config`.
+Set `CRC_DISK` and optionally `CRC_PV_SIZE` to bypass the prompt in automation.
 
 Default swap file: `/swapfile-aap-demo` via `mkswap` + `swapon`.
 

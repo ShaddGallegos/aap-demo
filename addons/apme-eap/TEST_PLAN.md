@@ -17,7 +17,7 @@ Helm. It does not create or launch an AAP project, inventory, or job template.
 Optional integrations are enabled when their credentials exist:
 
 - GitHub: environment variables or `~/.aap-demo/apme-eap-vars.yml`
-- Automation Hub: `~/.aap-demo/galaxy-token` or `~/.aap-demo/pah-config.yml`
+- Automation Hub: encrypted `~/.ansible/conf/env.yml` credentials or `~/.aap-demo/pah-config.yml`
 
 ## Automated Checks
 

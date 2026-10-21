@@ -50,7 +50,8 @@ export KUBECONFIG=~/.aap-demo/kubeconfig.microshift
 
 ```bash
 aap-demo version       # Tool version, commit, and build timestamp
-aap-demo status        # Show routes and credentials
+aap-demo status        # Show routes and health without secret values
+aap-demo status --show-secrets  # Reveal credentials in an interactive terminal
 ```
 
 ```text
@@ -68,9 +69,7 @@ AAP Deployments:
 ----------------
   https://aap-aap-operator.apps.127.0.0.1.nip.io
 
-Credentials:
-------------
-  aap-operator: admin / <password>
+Credentials: hidden (run 'aap-demo status --show-secrets' in a terminal to reveal)
 
 Addons:
 -------
@@ -130,9 +129,11 @@ aap-demo enable local-cache        # restore auto-load on future deploys
 ```bash
 # Deployment
 aap-demo deploy              # Deploy AAP 2.7
+aap-demo create --full-demo  # Create AAP + Ollama/AO + three RHEL 9 Fleet nodes + dashboard
 
 # Cluster management
-aap-demo status              # Show cluster status, routes, credentials
+aap-demo status              # Show cluster status and routes; secrets stay hidden
+aap-demo status --show-secrets # Reveal credentials interactively
 aap-demo stop                # Stop the cluster
 aap-demo start               # Start the cluster
 aap-demo ssh                 # SSH into the cluster node
@@ -151,10 +152,48 @@ aap-demo must-gather /tmp/d  # Collect to specific directory
 aap-demo repair              # Fix after sleep/wake issues
 
 # Maintenance
+aap-demo maintenance         # Preview reclaimable VM runtime data
+aap-demo maintenance --apply # Remove exited containers, unused images, and old caches/logs
+aap-demo maintenance uninstall         # Preview complete environment removal
+aap-demo maintenance uninstall --apply # Remove VMs, caches, trust, CLI, and residual state
 aap-demo clean               # Remove AAP deployment (keeps cluster)
 aap-demo update              # Pull latest code and reinstall
 aap-demo help                # Full command reference
 ```
+
+`aap-demo create --full-demo` is a noninteractive, fail-fast demo bootstrap.
+It creates a cluster sized for the included addons, deploys AAP 2.7, enables
+Ollama and Automation Orchestrator, enables Fleet, creates and registers three
+RHEL 9 nodes, reapplies integration wiring, and launches the dashboard. Fleet
+image download and AAP subscription attachment require configured Red Hat
+credentials. Run `aap-demo fleet auth` once before the full demo. Reruns reuse
+existing Fleet nodes instead of creating duplicates. Use `--no-open` to run
+the dashboard without opening a browser.
+
+`maintenance --apply` keeps running containers, images used by workloads,
+namespaces, PVCs, and the optional local image cache. It also vacuums system
+journals older than seven days and reports the VM disk space reclaimed.
+
+`maintenance uninstall --apply` requires typing `UNINSTALL` and removes the CRC
+cluster, Fleet VMs and images, CRC downloads, generated credentials and caches,
+temporary swap, ingress trust entries, MCP/shell integration, CLI symlink, and
+completions. It preserves the source repository and Red Hat pull secret. For
+noninteractive use, also set `AAP_DEMO_UNINSTALL_CONFIRM=UNINSTALL`.
+
+## Credential storage
+
+aap-demo stores retained passwords and tokens under the `aap_demo` namespace in
+the Ansible Vault-encrypted `~/.ansible/conf/env.yml`. The Vault password file is
+`~/.ansible/conf/.vaultpass.txt`. Existing YAML keys outside `aap_demo` are
+preserved, and older aap-demo Vault files are merged automatically. The
+password file is generated automatically when absent. The directory is mode
+`0700` and both files are mode `0600`.
+
+Status, watch, deploy, and generated system-information output hide secrets by
+default. Use `aap-demo status --show-secrets` only in an interactive terminal.
+Keeping the encrypted Vault and its password in the same user-only directory
+prevents accidental Git disclosure, but it does not protect against compromise
+of the user account.
 
 ## Architecture
 
@@ -174,8 +213,8 @@ design, storage, OLM, addons, and cross-platform support).
 ```bash
 CRC_CPUS=8                   # VM CPU count (default: 8)
 CRC_MEMORY=16384             # VM memory in MiB (default: 16384)
-CRC_DISK=100                 # VM disk size in GiB (default: 100)
-CRC_PV_SIZE=70               # Storage reserved for LVMS PVCs in GiB (default: 70, must be < CRC_DISK)
+CRC_DISK=180                 # VM disk; minimum leaves 100 GiB for root/container images
+CRC_PV_SIZE=70               # LVMS PV override; otherwise derived below CRC_DISK
 NAMESPACE=aap-operator       # Target namespace
 QUIET=true                   # Suppress disclaimer
 ```

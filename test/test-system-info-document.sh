@@ -124,10 +124,10 @@ omitted_inventory=$(aap_demo_collect_system_inventory omit)
 [ "$(jq -r '.storage.capacity_planning.actual_vm_used_gib' <<<"$include_inventory")" = 10 ]
 [ "$(jq -r '.storage.capacity_planning.actual_vm_free_gib' <<<"$include_inventory")" = 40 ]
 [ "$(jq -r '.storage.capacity_planning.configured_crc_disk_gib' <<<"$include_inventory")" = 160 ]
-[ "$(jq -r '.storage.capacity_planning.recommended_vm_disk_gib' <<<"$include_inventory")" = 150 ]
+[ "$(jq -r '.storage.capacity_planning.recommended_vm_disk_gib' <<<"$include_inventory")" = 210 ]
 [ "$(jq -r '.storage.capacity_planning.needs_rebuild' <<<"$include_inventory")" = true ]
 [ "$(jq -r '.storage.capacity_planning.configured_not_applied' <<<"$include_inventory")" = true ]
-[ "$(jq -r '.storage.capacity_planning.projected_vm_disk_gib.ollama' <<<"$include_inventory")" = 160 ]
+[ "$(jq -r '.storage.capacity_planning.projected_vm_disk_gib.ollama' <<<"$include_inventory")" = 220 ]
 
 unset CRC_DISK VM_DISK_SIZE
 export INFRA_TYPE=crc

@@ -8,8 +8,10 @@ _AAP_DEMO_VAULT_PATHS_EXPLICIT=false
 if [ -n "${AAP_DEMO_VAULT_FILE+x}" ] || [ -n "${AAP_DEMO_VAULT_PASSWORD_FILE+x}" ]; then
   _AAP_DEMO_VAULT_PATHS_EXPLICIT=true
 fi
-AAP_DEMO_VAULT_FILE="${AAP_DEMO_VAULT_FILE:-$HOME/.ansible/conf/env-aap-demo.yml}"
-AAP_DEMO_VAULT_PASSWORD_FILE="${AAP_DEMO_VAULT_PASSWORD_FILE:-$HOME/.ansible/conf/.vaultpass-aap-demo.txt}"
+AAP_DEMO_VAULT_FILE="${AAP_DEMO_VAULT_FILE:-$HOME/.ansible/conf/env.yml}"
+AAP_DEMO_VAULT_PASSWORD_FILE="${AAP_DEMO_VAULT_PASSWORD_FILE:-$HOME/.ansible/conf/.vaultpass.txt}"
+AAP_DEMO_PREVIOUS_VAULT_FILE="${AAP_DEMO_PREVIOUS_VAULT_FILE:-$HOME/.ansible/conf/env-aap-demo.yml}"
+AAP_DEMO_PREVIOUS_VAULT_PASSWORD_FILE="${AAP_DEMO_PREVIOUS_VAULT_PASSWORD_FILE:-$HOME/.ansible/conf/.vaultpass-aap-demo.txt}"
 AAP_DEMO_LEGACY_VAULT_FILE="${AAP_DEMO_LEGACY_VAULT_FILE:-$HOME/.ansible/conf/env_microshift.yml}"
 AAP_DEMO_LEGACY_VAULT_PASSWORD_FILE="${AAP_DEMO_LEGACY_VAULT_PASSWORD_FILE:-$HOME/.ansible/conf/.vaultpass_microshift.txt}"
 AAP_DEMO_SECRET_PROMPT_DEVICE="${AAP_DEMO_SECRET_PROMPT_DEVICE:-/dev/tty}"
@@ -32,27 +34,108 @@ _aap_demo_vault_require_tools() {
 
 _aap_demo_vault_migrate_legacy() {
   [ "$_AAP_DEMO_VAULT_PATHS_EXPLICIT" = false ] || return 0
-  [ ! -e "$AAP_DEMO_VAULT_FILE" ] || return 0
-  [ -s "$AAP_DEMO_LEGACY_VAULT_FILE" ] || return 0
-  [ -s "$AAP_DEMO_LEGACY_VAULT_PASSWORD_FILE" ] || {
-    _err "Legacy Vault exists without its password file: $AAP_DEMO_LEGACY_VAULT_FILE"
-    return 1
-  }
-
-  local config_dir
+  local config_dir source_file source_password plain_target plain_source merged encrypted
+  local -a source_files source_passwords
+  source_files=("$AAP_DEMO_PREVIOUS_VAULT_FILE" "$AAP_DEMO_LEGACY_VAULT_FILE")
+  source_passwords=("$AAP_DEMO_PREVIOUS_VAULT_PASSWORD_FILE" "$AAP_DEMO_LEGACY_VAULT_PASSWORD_FILE")
   config_dir=$(dirname "$AAP_DEMO_VAULT_FILE")
   mkdir -p "$config_dir"
   chmod 700 "$config_dir"
-  if [ -e "$AAP_DEMO_VAULT_PASSWORD_FILE" ]; then
-    _err "Cannot migrate legacy Vault because $AAP_DEMO_VAULT_PASSWORD_FILE already exists"
-    return 1
+
+  if [ ! -s "$AAP_DEMO_VAULT_PASSWORD_FILE" ]; then
+    if [ -e "$AAP_DEMO_VAULT_FILE" ]; then
+      _err "Vault exists without its password file: $AAP_DEMO_VAULT_FILE"
+      return 1
+    fi
+    local index
+    for index in "${!source_files[@]}"; do
+      if [ -s "${source_files[$index]}" ] && [ -s "${source_passwords[$index]}" ]; then
+        cp "${source_passwords[$index]}" "$AAP_DEMO_VAULT_PASSWORD_FILE"
+        _aap_demo_private_mode "$AAP_DEMO_VAULT_PASSWORD_FILE"
+        break
+      fi
+    done
   fi
 
-  mv "$AAP_DEMO_LEGACY_VAULT_FILE" "$AAP_DEMO_VAULT_FILE"
-  mv "$AAP_DEMO_LEGACY_VAULT_PASSWORD_FILE" "$AAP_DEMO_VAULT_PASSWORD_FILE"
-  _aap_demo_private_mode "$AAP_DEMO_VAULT_FILE"
-  _aap_demo_private_mode "$AAP_DEMO_VAULT_PASSWORD_FILE"
-  echo "✓ Migrated credentials to $AAP_DEMO_VAULT_FILE" >&2
+  local index
+  for index in "${!source_files[@]}"; do
+    source_file="${source_files[$index]}"
+    source_password="${source_passwords[$index]}"
+    [ -s "$source_file" ] || continue
+    [ -s "$source_password" ] || {
+      _err "Legacy Vault exists without its password file: $source_file"
+      return 1
+    }
+    [ -s "$AAP_DEMO_VAULT_PASSWORD_FILE" ] || return 0
+    _aap_demo_vault_require_tools || return 1
+
+    plain_target=$(mktemp "${config_dir}/.env.target.XXXXXX")
+    plain_source=$(mktemp "${config_dir}/.env.source.XXXXXX")
+    merged=$(mktemp "${config_dir}/.env.merged.XXXXXX")
+    encrypted=$(mktemp "${config_dir}/.env.vault.XXXXXX")
+    chmod 600 "$plain_target" "$plain_source" "$merged" "$encrypted"
+
+    if [ -s "$AAP_DEMO_VAULT_FILE" ]; then
+      if ! ansible-vault view --vault-password-file "$AAP_DEMO_VAULT_PASSWORD_FILE" \
+        "$AAP_DEMO_VAULT_FILE" >"$plain_target"; then
+        rm -f "$plain_target" "$plain_source" "$merged" "$encrypted"
+        _err "Unable to decrypt $AAP_DEMO_VAULT_FILE; legacy credentials were not changed"
+        return 1
+      fi
+    else
+      printf '{}\n' >"$plain_target"
+    fi
+    if ! ansible-vault view --vault-password-file "$source_password" \
+      "$source_file" >"$plain_source"; then
+      rm -f "$plain_target" "$plain_source" "$merged" "$encrypted"
+      _err "Unable to decrypt legacy Vault: $source_file"
+      return 1
+    fi
+
+    if ! python3 - "$plain_target" "$plain_source" >"$merged" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    target = yaml.safe_load(stream) or {}
+with open(sys.argv[2], encoding="utf-8") as stream:
+    source = yaml.safe_load(stream) or {}
+if not isinstance(target, dict) or not isinstance(source, dict):
+    raise SystemExit("Vault roots must be YAML mappings")
+
+def merge_missing(destination, incoming):
+    for key, value in incoming.items():
+        if key not in destination:
+            destination[key] = value
+        elif isinstance(destination[key], dict) and isinstance(value, dict):
+            merge_missing(destination[key], value)
+
+legacy = source.get("aap_demo")
+if isinstance(legacy, dict):
+    current = target.setdefault("aap_demo", {})
+    if not isinstance(current, dict):
+        raise SystemExit("Existing aap_demo Vault entry must be a mapping")
+    merge_missing(current, legacy)
+yaml.safe_dump(target, sys.stdout, default_flow_style=False, sort_keys=True)
+PY
+    then
+      rm -f "$plain_target" "$plain_source" "$merged" "$encrypted"
+      _err "Unable to merge legacy Vault data"
+      return 1
+    fi
+
+    if ! ansible-vault encrypt --vault-password-file "$AAP_DEMO_VAULT_PASSWORD_FILE" \
+      --output "$encrypted" "$merged" >/dev/null; then
+      rm -f "$plain_target" "$plain_source" "$merged" "$encrypted"
+      _err "Unable to encrypt merged Vault data"
+      return 1
+    fi
+    rm -f "$plain_target" "$plain_source" "$merged"
+    mv "$encrypted" "$AAP_DEMO_VAULT_FILE"
+    _aap_demo_private_mode "$AAP_DEMO_VAULT_FILE"
+    rm -f "$source_file" "$source_password"
+    echo "✓ Migrated credentials into $AAP_DEMO_VAULT_FILE" >&2
+  done
 }
 
 _aap_demo_vault_ensure_password_file() {
@@ -66,35 +149,13 @@ _aap_demo_vault_ensure_password_file() {
     _aap_demo_private_mode "$AAP_DEMO_VAULT_PASSWORD_FILE"
     return 0
   fi
-  if [ "${QUIET:-false}" = "true" ]; then
-    _err "Vault password file is missing: $AAP_DEMO_VAULT_PASSWORD_FILE"
-    return 1
-  fi
-  if [ ! -r "$AAP_DEMO_SECRET_PROMPT_DEVICE" ]; then
-    _err "Cannot securely prompt for the Ansible Vault password"
-    return 1
-  fi
-
-  local password confirmation
-  printf "Create Ansible Vault password: " >"$AAP_DEMO_SECRET_PROMPT_OUTPUT"
-  exec 9<"$AAP_DEMO_SECRET_PROMPT_DEVICE"
-  IFS= read -r -s password <&9
-  printf "\nConfirm Ansible Vault password: " >"$AAP_DEMO_SECRET_PROMPT_OUTPUT"
-  IFS= read -r -s confirmation <&9
-  exec 9<&-
-  printf "\n" >"$AAP_DEMO_SECRET_PROMPT_OUTPUT"
-
-  if [ -z "$password" ]; then
-    _err "Vault password must not be empty"
-    return 1
-  fi
-  if [ "$password" != "$confirmation" ]; then
-    _err "Vault passwords do not match"
-    return 1
-  fi
-
   umask 077
-  printf '%s\n' "$password" >"$AAP_DEMO_VAULT_PASSWORD_FILE"
+  if ! python3 -c 'import secrets; print(secrets.token_urlsafe(48))' \
+    >"$AAP_DEMO_VAULT_PASSWORD_FILE"; then
+    rm -f "$AAP_DEMO_VAULT_PASSWORD_FILE"
+    _err "Unable to generate the Ansible Vault password file"
+    return 1
+  fi
   _aap_demo_private_mode "$AAP_DEMO_VAULT_PASSWORD_FILE"
 }
 
@@ -175,12 +236,14 @@ aap_demo_vault_set() {
     return 1
   fi
 
-  if ! AAP_DEMO_SECRET_KEY="$key" AAP_DEMO_SECRET_VALUE="$value" python3 - "$plain" <<'PY'
+  if ! AAP_DEMO_SECRET_KEY="$key" python3 - "$plain" 3< <(printf '%s' "$value") <<'PY'
 import os
 import sys
 import yaml
 
 path = sys.argv[1]
+with open(3, encoding="utf-8", closefd=False) as secret_stream:
+    secret_value = secret_stream.read()
 with open(path, encoding="utf-8") as stream:
     data = yaml.safe_load(stream) or {}
 target = data
@@ -191,7 +254,7 @@ for part in parts[:-1]:
         child = {}
         target[part] = child
     target = child
-target[parts[-1]] = os.environ["AAP_DEMO_SECRET_VALUE"]
+target[parts[-1]] = secret_value
 with open(path, "w", encoding="utf-8") as stream:
     yaml.safe_dump(data, stream, default_flow_style=False, sort_keys=True)
 PY

@@ -162,10 +162,14 @@ class AAP:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--route", required=True)
-    parser.add_argument("--token", required=True)
+    token_group = parser.add_mutually_exclusive_group(required=True)
+    token_group.add_argument("--token")
+    token_group.add_argument("--token-fd", type=int)
     parser.add_argument("--ao-api-url")
     parser.add_argument("--ao-api-host", default="")
-    parser.add_argument("--ao-token")
+    ao_token_group = parser.add_mutually_exclusive_group()
+    ao_token_group.add_argument("--ao-token")
+    ao_token_group.add_argument("--ao-token-fd", type=int)
     parser.add_argument("--ao-credential-id", default="")
     parser.add_argument("--ao-integration-id", default="")
     parser.add_argument("--ao-agent-credential-id", default="")
@@ -177,6 +181,12 @@ def main() -> int:
     parser.add_argument("--control-branch", default="main")
     parser.add_argument("--ao-demo-ref", default="abcc1a1482a")
     args = parser.parse_args()
+    if args.token_fd is not None:
+        with open(args.token_fd, encoding="utf-8", closefd=False) as token_stream:
+            args.token = token_stream.read()
+    if args.ao_token_fd is not None:
+        with open(args.ao_token_fd, encoding="utf-8", closefd=False) as token_stream:
+            args.ao_token = token_stream.read()
     api = AAP(args.route, args.token)
 
     organizations = api.request("/organizations/?name=Default").get("results", [])

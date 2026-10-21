@@ -28,7 +28,7 @@ _persistent_crio_store_disk() {
 }
 
 _persistent_crio_store_size_gb() {
-  echo "${AAP_IMAGE_STORE_SIZE_GB:-60}"
+  echo "${AAP_IMAGE_STORE_SIZE_GB:-100}"
 }
 
 _persistent_crio_store_unsupported_on_macos() {
@@ -131,8 +131,8 @@ _persistent_crio_store_create_disk() {
   if [ -e "$disk" ]; then
     return 0
   fi
-  if ! [[ "$size" =~ ^[0-9]+$ ]] || [ "$size" -le 0 ]; then
-    echo "ERROR: AAP_IMAGE_STORE_SIZE_GB must be a positive integer" >&2
+  if ! [[ "$size" =~ ^[0-9]+$ ]] || [ "$size" -lt 100 ]; then
+    echo "ERROR: AAP_IMAGE_STORE_SIZE_GB must be an integer of at least 100" >&2
     return 1
   fi
   mkdir -p "$(dirname "$disk")"

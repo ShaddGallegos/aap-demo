@@ -22,12 +22,15 @@ Red Hat Automation Hub offline tokens allow CLI access to certified collections.
 2. Navigate to **Ansible** → **Automation Hub** → **Connect to Hub**
 3. Click **Load token**
 4. Copy the **Offline Token** (long base64 string, ~1500 characters)
-5. Save to `~/.aap-demo/galaxy-token`:
+5. Run the setup command and paste the token at its hidden prompt:
 
    ```bash
-   echo "YOUR_OFFLINE_TOKEN_HERE" > ~/.aap-demo/galaxy-token
-   chmod 600 ~/.aap-demo/galaxy-token
+   aap-demo enable setup-pah
    ```
+
+   The token is stored under the `aap_demo` namespace in the encrypted
+   `~/.ansible/conf/env.yml` Vault. Its password file is
+   `~/.ansible/conf/.vaultpass.txt`.
 
 ### Token Scope
 
@@ -110,7 +113,7 @@ aap-demo uses the first available source:
 
 When you run `aap-demo deploy`, the tool automatically:
 
-1. **Detects credentials**: Checks `~/.aap-demo/galaxy-token` and `~/.aap-demo/pah-config.yml`
+1. **Detects credentials**: Reads the `aap_demo` namespace in `~/.ansible/conf/env.yml` and the non-secret PAH URL from `~/.aap-demo/pah-config.yml`
 2. **Validates authentication**: Verifies token formats and configuration
 3. **Generates ansible.cfg**: Creates galaxy server configuration with detected sources
 4. **Installs collections**: Runs `ansible-galaxy collection install -r config/requirements.yml`
@@ -205,11 +208,10 @@ Collection Sources:
 
 **Solutions**:
 
-1. **Verify token format**:
+1. **Re-enter and validate the token**:
 
    ```bash
-   wc -c ~/.aap-demo/galaxy-token
-   # Should show ~1500 characters for offline token
+   aap-demo enable setup-pah
    ```
 
 2. **Test connectivity**:
@@ -277,20 +279,23 @@ SKIP_COLLECTIONS=true aap-demo deploy
 
 ## Security Considerations
 
-**Token Storage**: Tokens are stored in plaintext files. Protect with file permissions:
+**Token Storage**: Tokens and PAH credentials are stored under `aap_demo` in
+Ansible Vault-encrypted `~/.ansible/conf/env.yml`. The password file is
+`~/.ansible/conf/.vaultpass.txt`:
 
 ```bash
-chmod 600 ~/.aap-demo/galaxy-token
-chmod 600 ~/.aap-demo/pah-config.yml
+chmod 700 ~/.ansible/conf
+chmod 600 ~/.ansible/conf/env.yml ~/.ansible/conf/.vaultpass.txt
 ```
 
 **Token Rotation**: Offline tokens don't expire automatically, but should be rotated periodically:
 
 1. Generate new token from console.redhat.com
-2. Update `~/.aap-demo/galaxy-token`
+2. Run `aap-demo enable setup-pah` and paste the replacement at the hidden prompt
 3. No redeployment needed — new collections will use new token
 
-**Future Enhancement**: Keyring integration for encrypted credential storage (tracked in future ADR).
+Co-locating the encrypted Vault and password prevents accidental publication,
+but does not protect against compromise of the local user account.
 
 ## References
 

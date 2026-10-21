@@ -779,11 +779,9 @@ EOF
 }
 
 show_access_info() {
-  local AO_ROUTE PASS_SECRET AO_PASSWORD
+  local AO_ROUTE
   AO_ROUTE=$(kubectl get routes -n "$NAMESPACE" \
     -o jsonpath='{.items[0].spec.host}' 2>/dev/null || echo "")
-  PASS_SECRET=$(kubectl get secret -n "$NAMESPACE" \
-    -o name 2>/dev/null | grep -i "admin-password" | head -1 || echo "")
 
   if [ -n "$AO_ROUTE" ]; then
     echo "  URL:      https://${AO_ROUTE}"
@@ -791,21 +789,7 @@ show_access_info() {
     echo "  URL:      kubectl get routes -n ${NAMESPACE} -o jsonpath='{.items[0].spec.host}'"
   fi
   echo "  Username: admin"
-  if [ -n "$PASS_SECRET" ]; then
-    if [ "${CI:-}" != "true" ]; then
-      AO_PASSWORD=$(kubectl get "$PASS_SECRET" -n "$NAMESPACE" \
-        -o jsonpath='{.data.password}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
-      if [ -n "$AO_PASSWORD" ]; then
-        echo "  Password: ${AO_PASSWORD}"
-      else
-        echo "  Password: kubectl get $PASS_SECRET -n $NAMESPACE -o jsonpath='{.data.password}' | base64 -d"
-      fi
-    else
-      echo "  Password: kubectl get $PASS_SECRET -n $NAMESPACE -o jsonpath='{.data.password}' | base64 -d"
-    fi
-  else
-    echo "  Password: kubectl get secret -n $NAMESPACE | grep admin-password"
-  fi
+  echo "  Password: hidden (run 'aap-demo status --show-secrets' in a terminal)"
   echo "  Status:   kubectl get pods -n $NAMESPACE"
 }
 
@@ -834,7 +818,7 @@ sync_ao_demos() {
 
   _import_args=(
     --route "$_route"
-    --token "$_token"
+    --token-fd 3
     --aap-credential-id "$_aap_credential"
     --aap-integration-id "$_aap_integration"
   )
@@ -872,7 +856,8 @@ sync_ao_demos() {
   if [ -n "$_project" ]; then
     _import_args+=(--project-id "$_project")
   fi
-  python3 "${SCRIPT_DIR}/scripts/import-demos.py" "${_import_args[@]}" || true
+  python3 "${SCRIPT_DIR}/scripts/import-demos.py" "${_import_args[@]}" \
+    3< <(printf '%s' "$_token") || true
 }
 
 AO_AAP_SYNC_RAN=0
@@ -896,13 +881,13 @@ provision_aap_demos() {
   fi
   _provision_args=(
     --route "$_aap_route"
-    --token "$_aap_token"
+    --token-fd 3
   )
   if [ -n "$_ao_token" ] && [ -n "$_ao_credential" ] && [ -n "$_ao_integration" ]; then
     _provision_args+=(
       --ao-api-url "${AO_SYNC_API_URL:-https://router-internal-default.openshift-ingress.svc.cluster.local/api/v1}"
       --ao-api-host "$_ao_route"
-      --ao-token "$_ao_token"
+      --ao-token-fd 4
       --ao-credential-id "$_ao_credential"
       --ao-integration-id "$_ao_integration"
       --control-repository "${AO_SYNC_REPOSITORY:-https://github.com/RedHatOfficial/aap-demo.git}"
@@ -943,7 +928,8 @@ provision_aap_demos() {
     echo "  ⚠ AAP AO sync job deferred (AO credentials not ready)"
   fi
   local _provision_rc
-  if python3 "${SCRIPT_DIR}/scripts/provision-aap-demos.py" "${_provision_args[@]}"; then
+  if python3 "${SCRIPT_DIR}/scripts/provision-aap-demos.py" "${_provision_args[@]}" \
+    3< <(printf '%s' "$_aap_token") 4< <(printf '%s' "$_ao_token"); then
     if [ -n "$_ao_token" ] && [ -n "$_ao_credential" ] && [ -n "$_ao_integration" ]; then
       AO_AAP_SYNC_RAN=1
     fi

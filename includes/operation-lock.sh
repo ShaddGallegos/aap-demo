@@ -8,7 +8,7 @@ _AAP_DEMO_LOCK_HELD=false
 
 aap_demo_command_requires_lock() {
   case "${1:-}" in
-    repair | clean | destroy | stop | start | create | setup | update | config \
+    repair | clean | maintenance | destroy | stop | start | create | setup | update | config \
       | redeploy | redeploy-all | kubeconfig | idle | fleet | enable | disable \
       | wire | deploy | deploy-all)
       return 0

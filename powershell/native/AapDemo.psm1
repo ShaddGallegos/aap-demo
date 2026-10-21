@@ -44,6 +44,8 @@ Export-ModuleMember -Function @(
 
   'Invoke-AapDemoClean'
 
+  'Invoke-AapDemoMaintenance'
+
   'Invoke-AapDemoRepair'
 
   'Invoke-AapDemoSetup'

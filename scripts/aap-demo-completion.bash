@@ -7,8 +7,8 @@ _aap_demo() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD - 1]}"
 
-  commands="deploy deploy-all status clean destroy stop repair setup create watch update config redeploy redeploy-all redhat-status rh-status kubeconfig help"
-  options="--infra --kubeconfig --context --ansible"
+  commands="deploy deploy-all status clean maintenance destroy stop repair setup create watch update config redeploy redeploy-all redhat-status rh-status kubeconfig help"
+  options="--infra --kubeconfig --context --ansible --apply --full-demo --no-open --show-secrets"
   infra_types="minc vm lab"
 
   # Handle option value completion
@@ -25,6 +25,11 @@ _aap_demo() {
       return 0
       ;;
   esac
+
+  if [ "${COMP_WORDS[1]:-}" = "maintenance" ] && [ "$COMP_CWORD" -eq 2 ]; then
+    COMPREPLY=($(compgen -W "uninstall --apply" -- "$cur"))
+    return 0
+  fi
 
   # Handle --infra= and --context= inline completion
   if [[ "$cur" == --infra=* ]]; then

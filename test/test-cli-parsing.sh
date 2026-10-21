@@ -89,7 +89,7 @@ echo "PASS: structured-output options are validated"
 help_output=$(QUIET=true "$AAP_DEMO_SH" --help)
 for command in deploy status watch clean redeploy redeploy-all idle preflight diagnose \
   must-gather wire config redhat-status update version help create destroy stop start \
-  repair setup ssh kubeconfig system-info dashboard; do
+  repair setup ssh kubeconfig system-info dashboard maintenance; do
   if ! grep -Eq "^[[:space:]]+${command}([[:space:]|]|\$)" <<<"$help_output"; then
     echo "FAIL: --help is missing command: $command"
     exit 1
@@ -112,9 +112,13 @@ for text in \
   "fleet destroy" \
   "--refresh-catalog" \
   "--purge-data" \
+  "maintenance [--apply]" \
+  "maintenance uninstall [--apply]" \
+  "AAP_DEMO_UNINSTALL_CONFIRM=UNINSTALL" \
   "status --json" \
   "system-info [--redact] [--json] [--output FILE]" \
   "dashboard [--no-open]" \
+  "create --full-demo" \
   "AO_LLM_PROVIDER=ollama|external|none" \
   "aap-demo fleet add 3 --image rhel9" \
   "aap-demo redeploy-all"; do

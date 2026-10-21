@@ -1435,15 +1435,8 @@ function Show-AapPortalSuccess {
   Write-Host 'Disable: aap-demo disable portal'
   Write-Host ''
 
-  $adminPassword = Get-AapAdminPassword -Namespace $Namespace
-  if ($adminPassword) {
-    Write-Host '  Credentials:'
-    Write-Host '    Username: admin'
-    Write-Host "    Password: $adminPassword"
-    Write-Host ''
-    Write-Host '  Sign in with these AAP credentials when the portal prompts you.'
-    Write-Host ''
-  }
+  Write-Host "  Credentials are hidden. Run 'aap-demo status --show-secrets' in a terminal to reveal them."
+  Write-Host ''
 }
 
 function Invoke-AapDeployPortalAddon {

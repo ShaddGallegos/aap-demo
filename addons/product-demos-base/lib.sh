@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # Shared helpers for product-demos addons.
 
+APD_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../../includes/secure-curl.sh
+source "${APD_LIB_DIR}/../../includes/secure-curl.sh"
+# shellcheck source=../../includes/credential-vault.sh
+source "${APD_LIB_DIR}/../../includes/credential-vault.sh"
+
 APD_AAP_VERSION="${APD_AAP_VERSION:-2.7}"
 
 apd_common_extra_vars_yaml() {
@@ -476,18 +482,18 @@ apd_configure_galaxy_credentials() {
   local apd_org_id token cred_name cred_id patch_result
   local -a cred_names=("Automation Hub Certified Content" "Automation Hub Validated Content")
 
-  if [ ! -f "$token_file" ]; then
+  token=$(aap_demo_vault_get "aap_demo.galaxy.offline_token" 2>/dev/null || true)
+  if [ -z "$token" ] && [ -s "$token_file" ]; then
+    token=$(tr -d '[:space:]' <"$token_file")
+    if [ -n "$token" ] && aap_demo_vault_set "aap_demo.galaxy.offline_token" "$token"; then
+      rm -f "$token_file"
+    fi
+  fi
+  if [ -z "$token" ]; then
     return 0
   fi
-
   if [ -z "${AAP_API:-}" ] || [ -z "${AAP_USERNAME:-}" ] || [ -z "${AAP_PASSWORD:-}" ]; then
     apd_init_aap_connection || return 1
-  fi
-
-  token=$(tr -d '[:space:]' <"$token_file")
-  if [ -z "$token" ]; then
-    echo "  ⚠ Galaxy token file is empty: ${token_file}" >&2
-    return 1
   fi
 
   apd_org_id=$(apd_apd_org_id)

@@ -134,7 +134,7 @@ up even if the user disabled the addon.
 ### Red Hat download authentication
 
 Fleet stores Red Hat credentials and cluster identity in the Ansible Vault-encrypted
-`~/.ansible/conf/env-aap-demo.yml` file. Credentials include the offline token
+`~/.ansible/conf/env.yml` file under the `aap_demo` namespace. Credentials include the offline token
 and retained CDN username/password, plus the Red Hat account number and selected
 AAP subscription ID. Fleet exchanges the offline token for a short-lived bearer
 token, then calls the RHSM API endpoint
@@ -148,7 +148,7 @@ account number, and attaches the encrypted subscription selection through
 `/config/attach/`. Secrets are sent in request bodies rather than process
 arguments.
 The Vault password is read from
-`~/.ansible/conf/.vaultpass-aap-demo.txt`. Both files and their parent directory
+`~/.ansible/conf/.vaultpass.txt`. Both files and their parent directory
 are restricted to the current user.
 
 ```text

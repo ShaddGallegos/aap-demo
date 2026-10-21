@@ -352,10 +352,34 @@ if [ "$CRC_STATUS" = "Unknown" ] && [ -t 0 ]; then
   fi
   CRC_MEMORY=$((_input_memory_gb * 1024))
 
+  if [ -z "${CRC_DISK+x}" ]; then
+    echo ""
+    echo "  Disk size:"
+    echo "    1) 180 GB (minimum; 100 GB for root/container images)"
+    echo "    2) 220 GB"
+    echo "    3) 270 GB"
+    echo "    4) 320 GB"
+    printf "  Choice [1]: "
+    read -r _input_disk_choice </dev/tty
+    if ! CRC_DISK=$(aap_demo_capacity_select_disk "$_input_disk_choice"); then
+      printf "${_RED}▸${_NC} Invalid disk choice: '%s' (choose 1, 2, 3, or 4)\n" \
+        "$_input_disk_choice"
+      exit 1
+    fi
+  fi
+
   aap_demo_capacity_resolve_crc_sizes
+
+  _recommended_disk=$(aap_demo_capacity_recommended_disk "${ADDONS:-}")
+  if [ "$CRC_DISK" -lt "$_recommended_disk" ]; then
+    printf "  ${_YELLOW}Warning:${_NC} ${CRC_DISK}GB is below the ${_recommended_disk}GB planning recommendation"
+    printf " for the selected addons.\n"
+  fi
 
   _save_config_key "CRC_CPUS" "$CRC_CPUS"
   _save_config_key "CRC_MEMORY" "$CRC_MEMORY"
+  _save_config_key "CRC_DISK" "$CRC_DISK"
+  _save_config_key "CRC_PV_SIZE" "$CRC_PV_SIZE"
 else
   CRC_CPUS="${CRC_CPUS:-${VM_CPUS:-${_DEFAULT_CPUS}}}"
   CRC_MEMORY="${CRC_MEMORY:-${VM_MEMORY:-$((_DEFAULT_MEMORY_GB * 1024))}}"

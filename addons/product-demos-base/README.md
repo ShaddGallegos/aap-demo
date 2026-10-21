@@ -58,8 +58,8 @@ Network access is required to:
 
 After installation, you'll need to configure some credentials in the AAP UI:
 
-1. **Galaxy/Automation Hub Tokens** (optional when `~/.aap-demo/galaxy-token` exists):
-   - Place your offline token at `~/.aap-demo/galaxy-token`, then enable product-demos
+1. **Galaxy/Automation Hub Tokens** (optional):
+   - Run `aap-demo enable setup-pah` to store the offline token in the encrypted `~/.ansible/conf/env.yml`, then enable product-demos
      (Galaxy credentials are wired automatically after the APD install job completes)
    - Or update "Automation Hub Certified Content" and "Automation Hub Validated Content" manually in the AAP UI
 
@@ -72,7 +72,7 @@ After installation, you'll need to configure some credentials in the AAP UI:
    - **OpenShift Credential** is auto-configured for local MicroShift when product demos are
      installed (`aap-demo enable product-demo-openshift` or after `aap-demo deploy`)
    - **AAP Credential** is auto-configured to the in-cluster gateway when wiring runs
-   - **Automation Hub** credentials are updated when `~/.aap-demo/galaxy-token` exists
+   - **Automation Hub** credentials are updated when present in the encrypted `~/.ansible/conf/env.yml`
 
 ### Custom Repository
 

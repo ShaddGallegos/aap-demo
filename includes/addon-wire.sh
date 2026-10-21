@@ -840,15 +840,15 @@ wire_apd_aap_credential() {
 }
 
 wire_apd_galaxy_if_present() {
-  local token_file="${GALAXY_TOKEN_FILE:-${AAP_DEMO_DIR}/galaxy-token}"
   if ! wire_apd_installed; then
     return 0
   fi
-  if [ ! -f "$token_file" ]; then
+  if ! aap_demo_vault_get "aap_demo.galaxy.offline_token" >/dev/null 2>&1 \
+    && [ ! -s "${GALAXY_TOKEN_FILE:-${AAP_DEMO_DIR}/galaxy-token}" ]; then
     return 0
   fi
-  wire_log "Wiring APD Automation Hub credentials from ${token_file}..."
-  apd_configure_galaxy_credentials "$token_file" || wire_warn "APD Galaxy credential wiring skipped"
+  wire_log "Wiring APD Automation Hub credentials from encrypted credential storage..."
+  apd_configure_galaxy_credentials || wire_warn "APD Galaxy credential wiring skipped"
 }
 
 wire_ao_aap() {

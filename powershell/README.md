@@ -56,7 +56,8 @@ aap-demo help
 ```powershell
 aap-demo create        # Create OpenShift Local cluster (~10–20 min first time)
 aap-demo deploy        # Deploy AAP 2.7 (~5–15 min)
-aap-demo status        # Routes, credentials, pod counts
+aap-demo status        # Routes and pod counts without secrets
+aap-demo status --show-secrets # Reveal credentials interactively
 ```
 
 On first `create`, you are prompted to choose a CRC preset (MicroShift is

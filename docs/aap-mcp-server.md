@@ -95,7 +95,7 @@ aap-demo enable mcp-server
 ```
 
 The AAP admin password remains stored in the Kubernetes Secret referenced by
-the AAP custom resource. Use `aap-demo status` when interactive credentials
+the AAP custom resource. Use `aap-demo status --show-secrets` when interactive credentials
 are required. Do not put passwords or bearer tokens in documentation, source
 control, or support bundles.
 

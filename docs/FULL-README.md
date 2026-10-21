@@ -44,7 +44,7 @@ CRC defaults to 16–24 GB of VM RAM. On a 32 GB workstation, image pulls and op
 reconciliation can exhaust host memory.
 
 During interactive `aap-demo create` on **Linux**, you are prompted for temporary swap
-before CPU and memory allocation (default yes on hosts with 36 GB RAM or less). The
+before CPU, memory, and disk allocation (default yes on hosts with 36 GB RAM or less). The
 script creates a `swapon` file at `/swapfile-aap-demo` by default and handles btrfs
 (Fedora), xfs/ext4 (RHEL), and SELinux `swapfile_t`.
 
@@ -56,6 +56,12 @@ Resource allocation for CRC VM:
   Temp swap size in GB [16]:
   CPUs [8]:
   Memory in GB [16]:
+  Disk size:
+    1) 180 GB (minimum; 100 GB for root/container images)
+    2) 220 GB
+    3) 270 GB
+    4) 320 GB
+  Choice [1]:
 ```
 
 Host prep for pull secret, libvirt, and CRC setup:
@@ -155,7 +161,9 @@ other cluster data.
   other commands (`diagnose`, `test`, `watch`, …)
 - See [powershell/README.md](powershell/README.md) for full Windows install and usage
 
-Once deployed, `aap-demo status` shows routes, credentials, and cluster health:
+Once deployed, `aap-demo status` shows routes and cluster health without
+printing credentials. Use `aap-demo status --show-secrets` in an interactive
+terminal when credentials must be revealed:
 
 ```text
 Infra:       crc
@@ -166,9 +174,7 @@ Namespaces:
   aap-operator         27/27 pods   aap  https://aap-aap-operator.apps.127.0.0.1.nip.io
   olm                  4/4 pods
 
-Credentials:
-------------
-  aap-operator:        admin / <password>
+Credentials: hidden (run 'aap-demo status --show-secrets' in a terminal to reveal)
 
 Enabled Addons:
 ---------------
@@ -211,8 +217,8 @@ aap-demo deploys Ansible Automation Platform 2.7 to OpenShift Local (MicroShift)
 
 aap-demo automatically configures Ansible Galaxy authentication for downloading certified and private collections:
 
-- **Red Hat Certified Collections**: Offline token from console.redhat.com in `~/.aap-demo/galaxy-token`
-- **Private Automation Hub**: Configure URL and credentials in `~/.aap-demo/pah-config.yml`
+- **Red Hat Certified Collections**: Offline token stored under `aap_demo` in `~/.ansible/conf/env.yml`
+- **Private Automation Hub**: URL in `~/.aap-demo/pah-config.yml`; credentials in the encrypted Vault
 - **Priority-based fallback**: PAH → console.redhat.com → galaxy.ansible.com (community)
 
 Collections are installed automatically during deployment from `config/requirements.yml`. Skip with `SKIP_COLLECTIONS=true`.
@@ -233,9 +239,11 @@ aap-demo disable mcp-server
 ```bash
 # Deployment
 aap-demo deploy              # Deploy AAP 2.7
+aap-demo create --full-demo  # Create AAP + Ollama/AO + three RHEL 9 Fleet nodes + dashboard
 
 # Cluster management
-aap-demo status              # Show cluster status, routes, credentials
+aap-demo status              # Show cluster status and routes without secrets
+aap-demo status --show-secrets # Reveal credentials interactively
 aap-demo stop                # Stop the cluster
 aap-demo start               # Start the cluster
 aap-demo ssh                 # SSH into the cluster node
@@ -253,10 +261,41 @@ aap-demo must-gather         # Collect full diagnostics (AAP + cluster)
 aap-demo must-gather /tmp/d  # Collect to specific directory
 
 # Maintenance
+aap-demo maintenance         # Preview reclaimable VM runtime data
+aap-demo maintenance --apply # Remove exited containers, unused images, and old caches/logs
+aap-demo maintenance uninstall         # Preview complete environment removal
+aap-demo maintenance uninstall --apply # Remove VMs, caches, trust, CLI, and residual state
 aap-demo clean               # Remove AAP deployment (keeps cluster)
 aap-demo update              # Pull latest code and reinstall
 aap-demo help                # Full command reference
 ```
+
+`aap-demo create --full-demo` is a noninteractive, fail-fast demo bootstrap.
+It creates a cluster sized for the included addons, deploys AAP 2.7, enables
+Ollama and Automation Orchestrator, enables Fleet, creates and registers three
+RHEL 9 nodes, reapplies integration wiring, and launches the dashboard. Fleet
+image download and AAP subscription attachment require configured Red Hat
+credentials. Run `aap-demo fleet auth` once before the full demo. Reruns reuse
+existing Fleet nodes instead of creating duplicates. Use `--no-open` to run
+the dashboard without opening a browser.
+
+`maintenance --apply` keeps running containers, images used by workloads,
+namespaces, PVCs, and the optional local image cache. It also vacuums system
+journals older than seven days and reports the VM disk space reclaimed.
+
+`maintenance uninstall --apply` requires typing `UNINSTALL` and removes the CRC
+cluster, Fleet VMs and images, CRC downloads, generated credentials and caches,
+temporary swap, ingress trust entries, MCP/shell integration, CLI symlink, and
+completions. It preserves the source repository and Red Hat pull secret. For
+noninteractive use, also set `AAP_DEMO_UNINSTALL_CONFIRM=UNINSTALL`.
+
+Retained passwords and tokens are stored under the `aap_demo` namespace in
+Ansible Vault-encrypted `~/.ansible/conf/env.yml`, using
+`~/.ansible/conf/.vaultpass.txt`. Existing unrelated YAML is preserved during
+updates and migration. The directory is mode `0700`; both files are mode
+`0600`, and the password is generated automatically when absent. Co-locating
+the encrypted Vault and password protects against accidental
+publication, not compromise of the local user account.
 
 ## Architecture
 
@@ -276,8 +315,8 @@ design, storage, OLM, addons, and cross-platform support).
 ```bash
 CRC_CPUS=8                   # VM CPU count (default: 8)
 CRC_MEMORY=24576             # VM memory in MiB (default: 24576, use 16384 for AAP-only)
-CRC_DISK=100                 # VM disk size in GiB (default: 100)
-CRC_PV_SIZE=70               # Storage reserved for LVMS PVCs in GiB (default: 70, must be < CRC_DISK)
+CRC_DISK=180                 # VM disk; minimum leaves 100 GiB for root/container images
+CRC_PV_SIZE=70               # LVMS PV override; otherwise derived below CRC_DISK
 NAMESPACE=aap-operator       # Target namespace
 QUIET=true                   # Suppress disclaimer
 ```

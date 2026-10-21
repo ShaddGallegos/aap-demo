@@ -3,8 +3,8 @@
   "units": "GiB",
   "description": "Conservative local-development planning estimates, not storage guarantees or measured product requirements.",
   "core": {
-    "vm_gib": 100,
-    "description": "CRC/MicroShift, core AAP services, operators, images, logs, and persistent data."
+    "vm_gib": 160,
+    "description": "CRC/MicroShift, 70 GiB LVMS reservation, and at least 100 GiB for root, images, logs, and core AAP services."
   },
   "headroom": {
     "vm_gib": 20,

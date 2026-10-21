@@ -4,6 +4,7 @@ if [ -n "${_AAP_DEMO_STORAGE_CAPACITY_LOADED:-}" ]; then return 0; fi
 _AAP_DEMO_STORAGE_CAPACITY_LOADED=1
 
 AAP_DEMO_CAPACITY_MODEL="${AAP_DEMO_CAPACITY_MODEL:-${SCRIPT_DIR}/config/storage-capacity.json}"
+AAP_DEMO_MIN_IMAGE_STORAGE_GIB="${AAP_DEMO_MIN_IMAGE_STORAGE_GIB:-100}"
 
 _aap_demo_capacity_addons_json() {
   printf '%s' "${1:-}" | tr ',' ' ' | jq -Rsc '[scan("\\S+")] | unique'
@@ -87,7 +88,33 @@ aap_demo_capacity_default_pv_size() {
   fi
 }
 
+aap_demo_capacity_minimum_disk() {
+  local pv_size="$1" image_size="${2:-$AAP_DEMO_MIN_IMAGE_STORAGE_GIB}" required
+  if ! [[ "$pv_size" =~ ^[0-9]+$ ]] || [ "$pv_size" -le 0 ]; then
+    echo "ERROR: CRC_PV_SIZE must be a positive integer" >&2
+    return 1
+  fi
+  if ! [[ "$image_size" =~ ^[0-9]+$ ]] || [ "$image_size" -le 0 ]; then
+    echo "ERROR: AAP_DEMO_MIN_IMAGE_STORAGE_GIB must be a positive integer" >&2
+    return 1
+  fi
+
+  required=$((pv_size + image_size + 1))
+  printf '%s' "$((((required + 9) / 10) * 10))"
+}
+
+aap_demo_capacity_select_disk() {
+  case "${1:-1}" in
+    1 | 180) printf '180' ;;
+    2 | 220) printf '220' ;;
+    3 | 270) printf '270' ;;
+    4 | 320) printf '320' ;;
+    *) return 1 ;;
+  esac
+}
+
 aap_demo_capacity_resolve_crc_sizes() {
+  local requested_disk minimum_disk
   if [ -z "${CRC_DISK+x}" ]; then
     if [ -n "${VM_DISK_SIZE+x}" ]; then
       CRC_DISK="$VM_DISK_SIZE"
@@ -101,6 +128,18 @@ aap_demo_capacity_resolve_crc_sizes() {
     else
       CRC_PV_SIZE=$(aap_demo_capacity_default_pv_size "$CRC_DISK" 70)
     fi
+  fi
+
+  requested_disk="$CRC_DISK"
+  minimum_disk=$(aap_demo_capacity_minimum_disk "$CRC_PV_SIZE") || return 1
+  if ! [[ "$CRC_DISK" =~ ^[0-9]+$ ]] || [ "$CRC_DISK" -le 0 ]; then
+    echo "ERROR: CRC_DISK must be a positive integer" >&2
+    return 1
+  fi
+  if [ "$CRC_DISK" -lt "$minimum_disk" ]; then
+    CRC_DISK="$minimum_disk"
+    printf '  Warning: CRC_DISK=%sGB leaves less than %sGB for root/container images; increasing to %sGB.\n' \
+      "$requested_disk" "$AAP_DEMO_MIN_IMAGE_STORAGE_GIB" "$CRC_DISK" >&2
   fi
 }
 

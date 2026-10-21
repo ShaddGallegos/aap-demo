@@ -14,13 +14,27 @@ if ! declare -f _err >/dev/null 2>&1; then
 fi
 _YELLOW="${_YELLOW:-}"
 _NC="${_NC:-}"
+GALAXY_AUTH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=credential-vault.sh
+source "${GALAXY_AUTH_DIR}/credential-vault.sh"
+# shellcheck source=secure-curl.sh
+source "${GALAXY_AUTH_DIR}/secure-curl.sh"
 
 detect_galaxy_credentials() {
-  # Detect console.redhat.com offline token
-  if [ -f "$GALAXY_TOKEN_FILE" ]; then
+  GALAXY_TOKEN_FILE="${GALAXY_TOKEN_FILE:-$HOME/.aap-demo/galaxy-token}"
+  PAH_CONFIG_FILE="${PAH_CONFIG_FILE:-$HOME/.aap-demo/pah-config.yml}"
+
+  if [ -s "$GALAXY_TOKEN_FILE" ]; then
     GALAXY_TOKEN=$(cat "$GALAXY_TOKEN_FILE")
-    export GALAXY_TOKEN
+    if aap_demo_vault_set "aap_demo.galaxy.offline_token" "$GALAXY_TOKEN"; then
+      rm -f "$GALAXY_TOKEN_FILE"
+    else
+      _err "Unable to migrate $GALAXY_TOKEN_FILE into encrypted credential storage"
+      return 1
+    fi
   fi
+  GALAXY_TOKEN=$(aap_demo_vault_get "aap_demo.galaxy.offline_token" 2>/dev/null || true)
+  export GALAXY_TOKEN
 
   # Detect PAH configuration
   if [ -f "$PAH_CONFIG_FILE" ]; then
@@ -38,8 +52,48 @@ detect_galaxy_credentials() {
       PAH_PASS=$(grep -E '^\s*password:' "$PAH_CONFIG_FILE" | sed 's/^[^:]*: *//' | tr -d '"' | tr -d "'")
     fi
 
-    export PAH_URL PAH_TOKEN PAH_USER PAH_PASS
+    local migrated=false
+    if [ -n "${PAH_TOKEN:-}" ] && [ "$PAH_TOKEN" != "null" ]; then
+      aap_demo_vault_set "aap_demo.pah.token" "$PAH_TOKEN" || return 1
+      migrated=true
+    fi
+    if [ -n "${PAH_USER:-}" ] && [ "$PAH_USER" != "null" ]; then
+      aap_demo_vault_set "aap_demo.pah.username" "$PAH_USER" || return 1
+      migrated=true
+    fi
+    if [ -n "${PAH_PASS:-}" ] && [ "$PAH_PASS" != "null" ]; then
+      aap_demo_vault_set "aap_demo.pah.password" "$PAH_PASS" || return 1
+      migrated=true
+    fi
+    if [ "$migrated" = true ]; then
+      python3 - "$PAH_CONFIG_FILE" <<'PY'
+import os
+import sys
+import tempfile
+import yaml
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as stream:
+    data = yaml.safe_load(stream) or {}
+for key in ("token", "username", "password"):
+    data.pop(key, None)
+directory = os.path.dirname(path) or "."
+fd, temporary = tempfile.mkstemp(prefix=".pah-config.", dir=directory, text=True)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        yaml.safe_dump(data, stream, default_flow_style=False, sort_keys=True)
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PY
+    fi
   fi
+  PAH_TOKEN=$(aap_demo_vault_get "aap_demo.pah.token" 2>/dev/null || true)
+  PAH_USER=$(aap_demo_vault_get "aap_demo.pah.username" 2>/dev/null || true)
+  PAH_PASS=$(aap_demo_vault_get "aap_demo.pah.password" 2>/dev/null || true)
+  export PAH_URL PAH_TOKEN PAH_USER PAH_PASS
 }
 
 configure_pah_remotes() {

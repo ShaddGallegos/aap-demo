@@ -66,6 +66,8 @@ source "${SCRIPT_DIR}/includes/storage-capacity.sh"
 source "${SCRIPT_DIR}/includes/system-inventory.sh"
 # shellcheck source=includes/system-info-document.sh
 source "${SCRIPT_DIR}/includes/system-info-document.sh"
+# shellcheck source=includes/maintenance.sh
+source "${SCRIPT_DIR}/includes/maintenance.sh"
 
 # KUBECONFIG is set later by setup_kubeconfig() after argument parsing
 
@@ -123,6 +125,9 @@ OUTPUT_JSON=false
 REDACT=false
 SYSTEM_INFO_OUTPUT=""
 DASHBOARD_NO_OPEN=false
+MAINTENANCE_APPLY=false
+FULL_DEMO=false
+SHOW_SECRETS=false
 
 for arg in "$@"; do
   # Handle pending flag value
@@ -180,6 +185,12 @@ for arg in "$@"; do
     --no-open)
       DASHBOARD_NO_OPEN=true
       ;;
+    --full-demo)
+      FULL_DEMO=true
+      ;;
+    --show-secrets)
+      SHOW_SECRETS=true
+      ;;
     status)
       if [ "$COMMAND" = "fleet" ] && [ "${EXTRA_ARGS[0]:-}" = "auth" ]; then
         EXTRA_ARGS+=("$arg")
@@ -205,7 +216,7 @@ for arg in "$@"; do
         exit 1
       fi
       ;;
-    deploy | deploy-all | repair | clean | stop | setup | create | watch | update | config | redeploy | redeploy-all | redhat-status | rh-status | kubeconfig | ssh | idle | preflight | diagnose | must-gather | enable | disable | wire | system-info | dashboard | version | help | --help | -h | --version | -V)
+    deploy | deploy-all | repair | clean | maintenance | stop | setup | create | watch | update | config | redeploy | redeploy-all | redhat-status | rh-status | kubeconfig | ssh | idle | preflight | diagnose | must-gather | enable | disable | wire | system-info | dashboard | version | help | --help | -h | --version | -V)
       case "$arg" in
         --version | -V) COMMAND="version" ;;
         *) COMMAND="$arg" ;;
@@ -226,6 +237,9 @@ for arg in "$@"; do
     --ai | --reset | --skip-cache | --force | --refresh-catalog | --purge-data | --purge-creds)
       # Flags for diagnose --ai, destroy --reset, addon deploy.sh options
       EXTRA_ARGS+=("$arg")
+      ;;
+    --apply)
+      MAINTENANCE_APPLY=true
       ;;
     add | remove | list)
       # Subcommand args for fleet command
@@ -259,7 +273,8 @@ for arg in "$@"; do
       ;;
     *)
       # Commands that accept arbitrary args
-      if [ "$COMMAND" = "must-gather" ] || [ "$COMMAND" = "clean" ] || [ "$COMMAND" = "fleet" ]; then
+      if [ "$COMMAND" = "must-gather" ] || [ "$COMMAND" = "clean" ] \
+        || [ "$COMMAND" = "fleet" ] || [ "$COMMAND" = "maintenance" ]; then
         EXTRA_ARGS+=("$arg")
       elif [ -n "$COMMAND" ]; then
         echo "Unknown argument for '$COMMAND': $arg"
@@ -284,6 +299,16 @@ if [ "$OUTPUT_JSON" = true ] && [ "$COMMAND" != status ] && [ "$COMMAND" != syst
   echo "ERROR: --json is supported only by status and system-info" >&2
   exit 1
 fi
+if [ "$SHOW_SECRETS" = true ]; then
+  if [ "$COMMAND" != status ]; then
+    echo "ERROR: --show-secrets is supported only by status" >&2
+    exit 1
+  fi
+  if [ ! -t 1 ] || [ ! -r /dev/tty ]; then
+    echo "ERROR: --show-secrets requires an interactive terminal" >&2
+    exit 1
+  fi
+fi
 if [ "$REDACT" = true ] && [ "$COMMAND" != system-info ]; then
   echo "ERROR: --redact is supported only by system-info" >&2
   exit 1
@@ -292,8 +317,17 @@ if [ -n "$SYSTEM_INFO_OUTPUT" ] && [ "$COMMAND" != system-info ]; then
   echo "ERROR: --output is supported only by system-info" >&2
   exit 1
 fi
-if [ "$DASHBOARD_NO_OPEN" = true ] && [ "$COMMAND" != dashboard ]; then
+if [ "$DASHBOARD_NO_OPEN" = true ] \
+  && ! { [ "$COMMAND" = dashboard ] || { [ "$COMMAND" = create ] && [ "$FULL_DEMO" = true ]; }; }; then
   echo "ERROR: --no-open is supported only by dashboard" >&2
+  exit 1
+fi
+if [ "$FULL_DEMO" = true ] && [ "$COMMAND" != create ]; then
+  echo "ERROR: --full-demo is supported only by create" >&2
+  exit 1
+fi
+if [ "$MAINTENANCE_APPLY" = true ] && [ "$COMMAND" != maintenance ]; then
+  echo "ERROR: --apply is supported only by maintenance" >&2
   exit 1
 fi
 
@@ -502,7 +536,7 @@ Usage: aap-demo [options] <command>
 Common commands:
   create                    Create the local cluster
   deploy                    Deploy AAP 2.7
-  status                    Show cluster, routes, credentials, addons, and Fleet
+  status                    Show cluster, routes, addons, and Fleet without secrets
   diagnose [--ai]           Run environment health checks
   enable <addon>            Enable an addon
   disable <addon>           Disable an addon
@@ -537,6 +571,8 @@ OPTIONS:
     --redact                              Mask secrets in system-info output
     --output FILE, --output=FILE          Write system-info to a custom path
     --no-open                             Do not open a browser for dashboard
+    --full-demo                           Build the complete local demo with create
+    --show-secrets                        Reveal credentials with interactive status only
     --ai                                  Enable AI diagnosis for diagnose
     --reset                               Clear config after destroy
     --skip-cache                          Do not save images during destroy
@@ -549,7 +585,8 @@ OPTIONS:
 
 CORE COMMANDS:
     deploy | deploy-all             Deploy AAP 2.7; create cluster if needed
-    status                          Show cluster, AAP, addons, routes, credentials, Fleet
+    status                          Show cluster, AAP, addons, routes, and Fleet
+    status --show-secrets           Reveal login credentials in an interactive terminal
     status --json                   Emit machine-readable status without secret values
     system-info                     Refresh the private Markdown environment report
     system-info [--redact] [--json] [--output FILE]
@@ -557,6 +594,9 @@ CORE COMMANDS:
     dashboard [--no-open]           Run the localhost add-on management dashboard
     watch                           Watch AAP deployment progress
     clean                           Remove AAP while keeping the cluster
+    maintenance [--apply]           Preview or remove safe-to-delete VM data
+    maintenance uninstall [--apply]
+                                    Fully remove aap-demo; preserves pull secret and source
     redeploy                        Clean and redeploy AAP
     redeploy-all                    Destroy and rebuild cluster, AAP, and configured addons
     idle [true|false]               Show, scale down, or scale up AAP components
@@ -572,6 +612,7 @@ CORE COMMANDS:
 
 CLUSTER COMMANDS:
     create                          Create the OpenShift Local cluster
+    create --full-demo              Create cluster, AAP, AO/Ollama, Fleet, and dashboard
     destroy [--reset] [--skip-cache]
                                     Delete the cluster and optionally config/cache
     stop                            Stop Fleet VMs and the cluster
@@ -618,7 +659,7 @@ ENVIRONMENT AND OVERRIDES:
     NAMESPACE=name                  AAP namespace (default: aap-operator)
     QUIET=true                      Disable interactive prompts where supported
     FORCE=true                      Force supported reinstall operations
-    CRC_DISK=GiB                    CRC VM disk; otherwise sized from enabled addons
+    CRC_DISK=GiB                    CRC VM disk; minimum preserves 100 GiB for images
     CRC_PV_SIZE=GiB                 LVMS PV area; adaptive default stays below CRC_DISK
     AAP_RESOURCE_PREFLIGHT_STRICT=true
                                     Fail preflight on insufficient capacity
@@ -633,9 +674,11 @@ ENVIRONMENT AND OVERRIDES:
                         Keep CRI-O image storage on a persistent qcow2 disk
                         (Linux/libvirt only; macOS uses the OCI image cache)
     AAP_IMAGE_STORE_DISK Path to the persistent image disk
-    AAP_IMAGE_STORE_SIZE_GB  Persistent disk size (default: 60)
+    AAP_IMAGE_STORE_SIZE_GB  Persistent disk size (minimum/default: 100)
     AAP_IMAGE_STORE_FORMAT=true
                         Explicitly format a blank persistent disk once
+    AAP_DEMO_UNINSTALL_CONFIRM=UNINSTALL
+                        Required with QUIET=true for maintenance uninstall --apply
 
     CRC disk settings apply only when the VM is created. Existing VMs are
     never resized or rebuilt automatically; applying a larger value requires
@@ -650,6 +693,9 @@ EXAMPLES:
     aap-demo system-info --json --redact
     aap-demo dashboard
     aap-demo diagnose
+    aap-demo maintenance
+    aap-demo maintenance uninstall
+    aap-demo create --full-demo
     aap-demo enable fleet
     aap-demo fleet auth
     aap-demo fleet add 3 --image rhel9
@@ -1972,11 +2018,11 @@ cmd_status() {
   fi
   echo ""
 
-  # Show credentials for AAP namespaces
+  # Reveal credentials only after an explicit interactive request.
   local _cred_namespaces _cred_found
-  _cred_namespaces=$(kubectl get aap -A --no-headers 2>/dev/null | awk '{print $1}' | sort -u)
   _cred_found=false
-  if [ -n "$_cred_namespaces" ]; then
+  if [ "$SHOW_SECRETS" = true ]; then
+    _cred_namespaces=$(kubectl get aap -A --no-headers 2>/dev/null | awk '{print $1}' | sort -u)
     for ns in $_cred_namespaces; do
       local ADMIN_PASSWORD=""
       local ADMIN_SECRET
@@ -2001,10 +2047,14 @@ cmd_status() {
       fi
     done
     [ "$_cred_found" = "true" ] && echo ""
+  else
+    echo "Credentials: hidden (run 'aap-demo status --show-secrets' in a terminal to reveal)"
+    echo ""
   fi
 
   # Show credentials for Automation Orchestrator (ao addon)
-  if echo "$(_addons_list)" | grep -qw "ao" || kubectl get namespace automation-orchestrator &>/dev/null 2>&1; then
+  if [ "$SHOW_SECRETS" = true ] \
+    && { echo "$(_addons_list)" | grep -qw "ao" || kubectl get namespace automation-orchestrator &>/dev/null 2>&1; }; then
     local _ao_ns="automation-orchestrator"
     local _ao_pw="" _ao_secret=""
     _ao_secret=$(kubectl get secret -n "$_ao_ns" -o name 2>/dev/null | grep -i "admin-password" | head -1 || true)
@@ -2132,7 +2182,7 @@ cmd_status_json() {
 }
 
 cmd_system_info() {
-  local cluster_state secret_mode="include" format="markdown" output
+  local cluster_state secret_mode="redact" format="markdown" output
   cluster_state=$(infra_get_state 2>/dev/null || echo "not_created")
   if [ "$cluster_state" = running ]; then
     if ! setup_kubeconfig >/dev/null; then
@@ -2426,6 +2476,59 @@ cmd_create() {
 
   install_ingress_ca_trust
   setup_kubeconfig
+}
+
+cmd_full_demo() {
+  local QUIET=true
+  local ADDONS="mcp-server,ollama,ao,fleet"
+  export QUIET ADDONS
+
+  echo ""
+  printf "\033[1maap-demo create --full-demo\033[0m - Building complete local demo...\n"
+  echo ""
+  echo "Workflow:"
+  echo "  1. Create OpenShift Local cluster"
+  echo "  2. Deploy AAP 2.7"
+  echo "  3. Enable Ollama and Automation Orchestrator"
+  echo "  4. Enable Fleet and create three RHEL 9 nodes"
+  echo "  5. Reapply integrations and launch dashboard"
+  echo ""
+
+  if ! cmd_fleet auth status; then
+    echo ""
+    echo "ERROR: Full demo requires valid Red Hat Fleet download credentials." >&2
+    echo "  Configure them first: aap-demo fleet auth" >&2
+    return 1
+  fi
+
+  cmd_create || return 1
+  AAP_DEMO_SKIP_STANDARD_AO=true cmd_deploy || return 1
+  cmd_enable ollama || return 1
+  AO_LLM_PROVIDER=ollama cmd_enable ao || return 1
+  cmd_enable fleet || return 1
+
+  local fleet_nodes missing_nodes
+  fleet_nodes=$(fleet_count 2>/dev/null || echo 0)
+  if [ "$fleet_nodes" -lt 3 ]; then
+    missing_nodes=$((3 - fleet_nodes))
+    cmd_fleet add "$missing_nodes" --image rhel9 || return 1
+  else
+    echo "✓ Fleet already has ${fleet_nodes} node(s); reusing them"
+    cmd_fleet start || return 1
+    cmd_fleet register || return 1
+  fi
+
+  cmd_wire || return 1
+  aap_demo_generate_system_info || return 1
+
+  echo ""
+  echo "✓ Full demo environment is ready"
+  echo "  AAP, Automation Orchestrator, Ollama, and three Fleet nodes are configured."
+  echo "  Launching the aap-demo dashboard..."
+  echo ""
+
+  _aap_demo_release_operation_lock
+  cmd_dashboard
 }
 
 # shellcheck source=includes/galaxy-auth.sh
@@ -3037,20 +3140,6 @@ watch_aap() {
     kubectl get route -n "$NAMESPACE" 2>/dev/null || echo "  No routes found"
     echo ""
 
-    # Always show credentials if admin secret exists
-    ADMIN_SECRET=$(kubectl get aap -n "$NAMESPACE" -o jsonpath='{.items[0].status.adminPasswordSecret}' 2>/dev/null || true)
-    if [ -n "$ADMIN_SECRET" ]; then
-      ADMIN_PASSWORD=$(kubectl get secret -n "$NAMESPACE" "$ADMIN_SECRET" -o jsonpath='{.data.password}' 2>/dev/null | base64 -d 2>/dev/null || true)
-      if [ -n "$ADMIN_PASSWORD" ]; then
-        AAP_URL=$(kubectl get route -n "$NAMESPACE" -o jsonpath='{.items[0].spec.host}' 2>/dev/null || echo "(route not found)")
-        echo "Credentials:"
-        echo "  URL:      https://$AAP_URL"
-        echo "  Username: admin"
-        echo "  Password: $ADMIN_PASSWORD"
-        echo ""
-      fi
-    fi
-
     # Check if deployment is complete. AAP 2.7 reports a terminal
     # Successful=False/reason=Successful alongside Running=True.
     SUCCESSFUL=$(kubectl get aap -n "$NAMESPACE" -o jsonpath='{.items[0].status.conditions[?(@.type=="Successful")].status}' 2>/dev/null || echo "")
@@ -3058,22 +3147,6 @@ watch_aap() {
     SUCCESSFUL_REASON=$(kubectl get aap -n "$NAMESPACE" -o jsonpath='{.items[0].status.conditions[?(@.type=="Successful")].reason}' 2>/dev/null || echo "")
     FAILURE=$(kubectl get aap -n "$NAMESPACE" -o jsonpath='{.items[0].status.conditions[?(@.type=="Failure")].status}' 2>/dev/null || echo "")
     if aap_condition_is_complete "$SUCCESSFUL" "$RUNNING" "$SUCCESSFUL_REASON" "$FAILURE"; then
-      # Get admin password from secret
-      ADMIN_PASSWORD=""
-      ADMIN_SECRET=$(kubectl get aap -n "$NAMESPACE" -o jsonpath='{.items[0].status.adminPasswordSecret}' 2>/dev/null || true)
-      if [ -n "$ADMIN_SECRET" ]; then
-        ADMIN_PASSWORD=$(kubectl get secret -n "$NAMESPACE" "$ADMIN_SECRET" -o jsonpath='{.data.password}' 2>/dev/null | base64 -d 2>/dev/null || true)
-      fi
-      # Fallback to common secret names
-      if [ -z "$ADMIN_PASSWORD" ]; then
-        for secret_name in aap-admin-password aap-controller-admin-password custom-admin-password; do
-          ADMIN_PASSWORD=$(kubectl get secret -n "$NAMESPACE" "$secret_name" -o jsonpath='{.data.password}' 2>/dev/null | base64 -d 2>/dev/null || true)
-          if [ -n "$ADMIN_PASSWORD" ]; then
-            break
-          fi
-        done
-      fi
-
       echo "✓ AAP deployment successful!"
       echo ""
       # Show CSV and namespace
@@ -3087,11 +3160,7 @@ watch_aap() {
       echo "AAP UI: https://$AAP_URL"
       echo ""
       echo "Username: admin"
-      if [ -n "$ADMIN_PASSWORD" ]; then
-        echo "Password: $ADMIN_PASSWORD"
-      else
-        echo "Password: (run: kubectl get secret -n $NAMESPACE aap-admin-password -o jsonpath='{.data.password}' | base64 -d)"
-      fi
+      echo "Password: hidden (run 'aap-demo status --show-secrets' in a terminal)"
       echo ""
 
       _aap_demo_run_addon_wire || true
@@ -3629,6 +3698,12 @@ case "$COMMAND" in
     # These handle their own cluster state (auto-start if stopped)
     setup_kubeconfig
     ;;
+  maintenance)
+    if [ "${EXTRA_ARGS[0]:-preview}" != "uninstall" ]; then
+      setup_kubeconfig
+      verify_cluster_type || exit 1
+    fi
+    ;;
   fleet)
     if [ "${EXTRA_ARGS[0]:-}" != "auth" ]; then
       setup_kubeconfig
@@ -3651,6 +3726,9 @@ case "$COMMAND" in
   clean)
     cmd_clean
     ;;
+  maintenance)
+    cmd_maintenance "${EXTRA_ARGS[0]:-preview}" "$MAINTENANCE_APPLY"
+    ;;
   destroy)
     for _arg in "${EXTRA_ARGS[@]}"; do
       [ "$_arg" = "--reset" ] && _DESTROY_RESET=true
@@ -3665,7 +3743,11 @@ case "$COMMAND" in
     cmd_start
     ;;
   create)
-    cmd_create
+    if [ "$FULL_DEMO" = true ]; then
+      cmd_full_demo
+    else
+      cmd_create
+    fi
     ;;
   setup)
     cmd_setup

@@ -61,6 +61,9 @@ function Get-AapParsedCliArgs {
     Reset        = $false
 
     Ai           = $false
+    Apply        = $false
+    FullDemo     = $false
+    ShowSecrets  = $false
 
     Positional   = [System.Collections.Generic.List[string]]::new()
 
@@ -77,6 +80,9 @@ function Get-AapParsedCliArgs {
       '^--reset$' { $parsed.Reset = $true; continue }
 
       '^--ai$' { $parsed.Ai = $true; continue }
+      '^--apply$' { $parsed.Apply = $true; continue }
+      '^--full-demo$' { $parsed.FullDemo = $true; continue }
+      '^--show-secrets$' { $parsed.ShowSecrets = $true; continue }
 
       '^-Namespace=(.+)$' { $parsed.Namespace = $Matches[1]; continue }
 
@@ -150,13 +156,25 @@ if ($Arguments.Count -gt 1) {
 
 $cli = Get-AapParsedCliArgs -Rest $rest
 
-
-
 try {
+  if ($cli.FullDemo -and $command -ne 'create') {
+    throw '--full-demo is supported only by create'
+  }
+  if ($cli.ShowSecrets -and $command -ne 'status') {
+    throw '--show-secrets is supported only by status'
+  }
+  if ($cli.ShowSecrets -and [Console]::IsOutputRedirected) {
+    throw '--show-secrets requires an interactive terminal'
+  }
 
   switch ($command) {
 
-    'create' { Invoke-AapDemoCreate }
+    'create' {
+      if ($cli.FullDemo) {
+        throw 'create --full-demo requires the Bash/Linux CLI because Fleet VM management is not available in native PowerShell.'
+      }
+      Invoke-AapDemoCreate
+    }
 
     'deploy' {
       $deployParams = Invoke-AapDeployParams $cli
@@ -168,7 +186,7 @@ try {
       Invoke-AapDemoDeploy @deployParams
     }
 
-    'status' { Invoke-AapDemoStatus }
+    'status' { Invoke-AapDemoStatus -ShowSecrets:$cli.ShowSecrets }
 
     'version' { Invoke-AapDemoVersion }
 
@@ -210,6 +228,11 @@ try {
 
       Invoke-AapDemoClean @params
 
+    }
+
+    'maintenance' {
+      $uninstall = $cli.Positional.Count -gt 0 -and $cli.Positional[0] -eq 'uninstall'
+      Invoke-AapDemoMaintenance -Apply:$cli.Apply -Uninstall:$uninstall
     }
 
     'repair' { Invoke-AapDemoRepair }

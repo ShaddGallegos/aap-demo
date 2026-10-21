@@ -32,8 +32,58 @@ function Invoke-AapDemoCreate {
 
   $cpus = if ($env:CRC_CPUS) { $env:CRC_CPUS } else { '8' }
   $memory = if ($env:CRC_MEMORY) { $env:CRC_MEMORY } else { '16384' }
-  $disk = if ($env:CRC_DISK) { $env:CRC_DISK } else { '100' }
-  $pvSize = if ($env:CRC_PV_SIZE) { $env:CRC_PV_SIZE } else { '50' }
+  $configuredDisk = Get-AapConfigValue 'CRC_DISK'
+  if ($env:CRC_DISK) {
+    $disk = $env:CRC_DISK
+  } elseif ($configuredDisk) {
+    $disk = $configuredDisk
+  } elseif ($crcState -eq 'Unknown') {
+    Write-Host 'Select CRC disk size:'
+    Write-Host '  1) 180 GB (minimum; 100 GB for root/container images)'
+    Write-Host '  2) 220 GB'
+    Write-Host '  3) 270 GB'
+    Write-Host '  4) 320 GB'
+    $diskChoice = Read-Host 'Choice [1]'
+    $disk = switch ($diskChoice) {
+      { $_ -in @('', '1', '180') } { '180'; break }
+      { $_ -in @('2', '220') } { '220'; break }
+      { $_ -in @('3', '270') } { '270'; break }
+      { $_ -in @('4', '320') } { '320'; break }
+      default { throw "Invalid disk choice '$diskChoice'. Choose 1, 2, 3, or 4." }
+    }
+  } else {
+    $disk = '180'
+  }
+
+  $configuredPvSize = Get-AapConfigValue 'CRC_PV_SIZE'
+  if ($env:CRC_PV_SIZE) {
+    $pvSize = $env:CRC_PV_SIZE
+  } elseif ($configuredPvSize) {
+    $pvSize = $configuredPvSize
+  } elseif ([int]$disk -gt 70) {
+    $pvSize = '70'
+  } elseif ([int]$disk -gt 30) {
+    $pvSize = "$([int]$disk - 30)"
+  } else {
+    $pvSize = [string][Math]::Max(1, ([int]$disk - 1))
+  }
+
+  $minimumImageSize = if ($env:AAP_DEMO_MIN_IMAGE_STORAGE_GIB) {
+    [int]$env:AAP_DEMO_MIN_IMAGE_STORAGE_GIB
+  } else {
+    100
+  }
+  if ($minimumImageSize -le 0) {
+    throw 'AAP_DEMO_MIN_IMAGE_STORAGE_GIB must be a positive integer'
+  }
+  $minimumDisk = [int]([Math]::Ceiling(([int]$pvSize + $minimumImageSize + 1) / 10.0) * 10)
+  if ([int]$disk -lt $minimumDisk) {
+    Write-AapWarn "CRC_DISK=${disk}GB leaves less than ${minimumImageSize}GB for root/container images; increasing to ${minimumDisk}GB."
+    $disk = [string]$minimumDisk
+  }
+
+  Set-AapConfigValue 'CRC_DISK' $disk
+  Set-AapConfigValue 'CRC_PV_SIZE' $pvSize
 
   & crc config set preset $preset 2>$null | Out-Null
   & crc config set cpus $cpus 2>$null | Out-Null
