@@ -169,6 +169,7 @@ class DashboardUnitTests(unittest.TestCase):
         self.assertIn('id="restart-button"', markup)
         self.assertIn("Host OS:", script)
         self.assertIn("CRC guest OS:", script)
+        self.assertIn("AAP subscription:", script)
         self.assertIn('api("/api/restart"', script)
 
     def test_host_os_falls_back_for_non_linux_inventory(self) -> None:

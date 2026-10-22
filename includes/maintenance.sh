@@ -119,7 +119,7 @@ _maintenance_uninstall_preview() {
   echo "  • Generated private system-information document and temporary logs"
   echo ""
   echo "Preserved:"
-  echo "  • Red Hat pull secret in ${data_dir}"
+  echo "  • Encrypted credentials in $HOME/.ansible/conf/env.yml"
   echo "  • Source repository: ${SCRIPT_DIR}"
   echo "  • Shared OS packages and libvirt group membership"
   echo ""
@@ -142,6 +142,18 @@ _maintenance_remove_shell_lines() {
     [ -f "$profile" ] || continue
     tmp=$(mktemp)
     awk '
+      $0 == "# >>> aap-demo PATH >>>" { skip_aap_demo_path=1; next }
+      skip_aap_demo_path == 1 && $0 == "# <<< aap-demo PATH <<<" {
+        skip_aap_demo_path=0
+        next
+      }
+      skip_aap_demo_path == 1 { next }
+      $0 == "# >>> aap-demo bash completion >>>" { skip_bash_completion=1; next }
+      skip_bash_completion == 1 && $0 == "# <<< aap-demo bash completion <<<" {
+        skip_bash_completion=0
+        next
+      }
+      skip_bash_completion == 1 { next }
       $0 == "# AAP Demo - Trust self-signed ingress CA for Node.js (Claude Code MCP)" { skip=1; next }
       skip == 1 && /NODE_EXTRA_CA_CERTS.*crc-ingress-ca\.crt/ { skip=0; next }
       $0 == "fpath=(~/.zsh/completions $fpath)" { remove_compinit=1; next }
@@ -154,23 +166,12 @@ _maintenance_remove_shell_lines() {
 }
 
 _maintenance_remove_state_preserving_pull_secret() {
-  local data_dir="$1" backup_dir secret
+  local data_dir="$1"
   _maintenance_validate_uninstall_path "$data_dir" || return 1
-
-  backup_dir=$(mktemp -d)
-  for secret in "$data_dir"/pull-secret.txt "$data_dir"/pull-secret.json; do
-    [ -f "$secret" ] || continue
-    cp -p "$secret" "$backup_dir/"
-  done
 
   rm -rf -- "$data_dir"
   mkdir -p "$data_dir"
   chmod 700 "$data_dir"
-  for secret in "$backup_dir"/pull-secret.txt "$backup_dir"/pull-secret.json; do
-    [ -f "$secret" ] || continue
-    mv "$secret" "$data_dir/"
-  done
-  rm -rf -- "$backup_dir"
 }
 
 _maintenance_uninstall_apply() {
@@ -234,6 +235,13 @@ _maintenance_uninstall_apply() {
 
   podman system connection remove aap-demo >/dev/null 2>&1 || true
 
+  if [ -f "${SCRIPT_DIR}/scripts/aap-demo-token-keepalive.sh" ]; then
+    bash "${SCRIPT_DIR}/scripts/aap-demo-token-keepalive.sh" disable >/dev/null || {
+      echo "ERROR: Failed to disable the token keepalive scheduler" >&2
+      return 1
+    }
+  fi
+
   _maintenance_remove_state_preserving_pull_secret "$data_dir"
   rm -rf -- "$crc_dir"
   cli_path="$HOME/.local/bin/aap-demo"
@@ -249,7 +257,7 @@ _maintenance_uninstall_apply() {
 
   echo ""
   echo "✓ aap-demo environment uninstalled"
-  echo "  Preserved pull secret: ${data_dir}"
+  echo "  Preserved encrypted credentials: $HOME/.ansible/conf/env.yml"
   echo "  Preserved source repository: ${SCRIPT_DIR}"
 }
 

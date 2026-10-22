@@ -4,6 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../../includes/aap-demo-paths.sh
 source "${SCRIPT_DIR}/../../includes/aap-demo-paths.sh"
+# shellcheck source=../../includes/credential-vault.sh
+source "${SCRIPT_DIR}/../../includes/credential-vault.sh"
 # shellcheck source=lib/admin-password.sh
 source "${SCRIPT_DIR}/lib/admin-password.sh"
 # shellcheck source=lib/replica-profile.sh
@@ -1111,18 +1113,6 @@ wait_for_ao_postgres_databases() {
   echo "✓ PostgreSQL databases ready (orchestrator, temporal, temporal_visibility)"
 }
 
-resolve_local_pull_secret_file() {
-  local path
-  for path in "${PULL_SECRET_PATH:-}" "$HOME/.aap-demo/pull-secret" \
-    "$HOME/.aap-demo/pull-secret.txt" "$HOME/.aap-demo/pull-secret.json"; do
-    if [ -n "$path" ] && [ -f "$path" ]; then
-      printf '%s\n' "$path"
-      return 0
-    fi
-  done
-  return 1
-}
-
 ao_pull_secret_is_dockerconfig() {
   local _type
   _type=$(kubectl get secret "$AO_PULL_SECRET_NAME" -n "$NAMESPACE" \
@@ -1136,21 +1126,21 @@ ao_pull_secret_is_dockerconfig() {
 # Do not copy redhat-operators-pull-secret: OLM may replace that name with an
 # Opaque placeholder ({operator: aap}) that fails ConfigurationValid.
 ensure_ao_pull_secret() {
-  local _pull_file
+  local _pull_secret
   if ao_pull_secret_is_dockerconfig; then
     return 0
   fi
-  if ! _pull_file=$(resolve_local_pull_secret_file); then
-    echo "WARNING: No local pull secret found (~/.aap-demo/pull-secret.txt)"
+  if ! _pull_secret=$(aap_demo_pull_secret_get); then
+    echo "WARNING: No pull secret found in encrypted credential storage"
     echo "  AO operator will reject Opaque catalog secrets as imagePullSecrets."
     return 1
   fi
   echo "Creating image pull secret ${AO_PULL_SECRET_NAME} (kubernetes.io/dockerconfigjson)..."
   kubectl delete secret "$AO_PULL_SECRET_NAME" -n "$NAMESPACE" 2>/dev/null || true
   kubectl create secret generic "$AO_PULL_SECRET_NAME" \
-    --from-file=.dockerconfigjson="$_pull_file" \
+    --from-file=.dockerconfigjson=/dev/fd/3 \
     --type=kubernetes.io/dockerconfigjson \
-    -n "$NAMESPACE"
+    -n "$NAMESPACE" 3< <(printf '%s' "$_pull_secret")
 }
 
 link_ao_pull_secrets_to_operator() {

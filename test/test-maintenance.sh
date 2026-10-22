@@ -86,6 +86,20 @@ printf 'bundle\n' >"$uninstall_home/.crc/cache/bundle"
 ln -s "$AAP_DEMO_SH" "$uninstall_home/.local/bin/aap-demo"
 # shellcheck disable=SC2016
 printf '%s\n' \
+  '# >>> aap-demo PATH >>>' \
+  'case ":$PATH:" in' \
+  '  *":$HOME/.local/bin:"*) ;;' \
+  '  *) export PATH="$HOME/.local/bin:$PATH" ;;' \
+  'esac' \
+  '# <<< aap-demo PATH <<<' \
+  '# >>> aap-demo bash completion >>>' \
+  'if [ -r "$HOME/.local/share/bash-completion/completions/aap-demo" ]; then' \
+  '  source "$HOME/.local/share/bash-completion/completions/aap-demo"' \
+  'fi' \
+  '# <<< aap-demo bash completion <<<' \
+  >"$uninstall_home/.bashrc"
+# shellcheck disable=SC2016
+printf '%s\n' \
   '# AAP Demo - Trust self-signed ingress CA for Node.js (Claude Code MCP)' \
   'export NODE_EXTRA_CA_CERTS="${AAP_DEMO_CONFIG_DIR:-${HOME}/.aap-demo}/crc-ingress-ca.crt"' \
   >"$uninstall_home/.bash_profile"
@@ -116,11 +130,19 @@ HOME="$uninstall_home" PATH="$mock_dir:$PATH" QUIET=true \
     cmd_maintenance uninstall true
   ' _ "$SCRIPT_DIR/.." >/dev/null
 
-[ -f "$uninstall_home/.aap-demo/pull-secret.txt" ]
+[ ! -e "$uninstall_home/.aap-demo/pull-secret.txt" ]
 [ ! -e "$uninstall_home/.aap-demo/generated-credential" ]
 [ ! -e "$uninstall_home/.aap-demo/fleet" ]
 [ ! -e "$uninstall_home/.crc" ]
 [ ! -e "$uninstall_home/.local/bin/aap-demo" ]
+if grep -q '^# >>> aap-demo bash completion >>>$' "$uninstall_home/.bashrc"; then
+  echo "FAIL: uninstall left the Bash completion loader behind"
+  exit 1
+fi
+if grep -q '^# >>> aap-demo PATH >>>$' "$uninstall_home/.bashrc"; then
+  echo "FAIL: uninstall left the PATH loader behind"
+  exit 1
+fi
 if grep -q 'NODE_EXTRA_CA_CERTS.*crc-ingress-ca.crt' "$uninstall_home/.bash_profile"; then
   echo "FAIL: uninstall left the shell CA export behind"
   exit 1
@@ -128,5 +150,13 @@ fi
 grep -Fq 'crc delete -f' "$mock_dir/uninstall.log"
 grep -Fq 'crc cleanup' "$mock_dir/uninstall.log"
 grep -Fq 'claude mcp remove aap-demo --scope user' "$mock_dir/uninstall.log"
+
+HOME="$uninstall_home" SHELL=/bin/bash bash "${SCRIPT_DIR}/../install.sh" >/dev/null
+[ -L "$uninstall_home/.local/bin/aap-demo" ]
+[ -f "$uninstall_home/.local/share/bash-completion/completions/aap-demo" ]
+[ "$(grep -c '^# >>> aap-demo PATH >>>$' "$uninstall_home/.bashrc")" -eq 1 ]
+[ "$(grep -c '^# >>> aap-demo bash completion >>>$' "$uninstall_home/.bashrc")" -eq 1 ]
+HOME="$uninstall_home" bash --noprofile --rcfile "$uninstall_home/.bashrc" -i -c \
+  'command -v aap-demo && complete -p aap-demo' >/dev/null 2>&1
 
 echo "PASS: maintenance preview, cleanup, and full uninstall paths are safe and explicit"

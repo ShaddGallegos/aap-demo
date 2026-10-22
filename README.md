@@ -42,8 +42,9 @@ semantics. The Linux bootstrap below is **not** a macOS/Windows/WSL installer.
   prompts for optional temp swap on memory-constrained hosts (see
   [scripts/README.md](scripts/README.md))
 - **Pull secret** — download from the
-  [Red Hat console](https://console.redhat.com/openshift/install/pull-secret) to
-  `~/Downloads/pull-secret.txt` (or pass its location with `--pull-secret`).
+  [Red Hat console](https://console.redhat.com/openshift/install/pull-secret).
+  Setup imports it into encrypted `~/.ansible/conf/env.yml`; remove the original
+  download after import.
 
 ## Install
 
@@ -189,14 +190,19 @@ aap-demo update              # Pull latest code and reinstall
 aap-demo help                # Full command reference
 ```
 
-`aap-demo create --full-demo` is a noninteractive, fail-fast demo bootstrap.
-It creates a cluster sized for the included addons, deploys AAP 2.7, enables
-Ollama and Automation Orchestrator, enables Fleet, creates and registers three
-RHEL 9 nodes, reapplies integration wiring, and launches the dashboard. Fleet
-image download and AAP subscription attachment require configured Red Hat
-credentials. Run `aap-demo fleet auth` once before the full demo. Reruns reuse
-existing Fleet nodes instead of creating duplicates. Use `--no-open` to run
-the dashboard without opening a browser.
+`aap-demo create --full-demo` is a fail-fast demo bootstrap.
+It creates a cluster sized for the included addons, deploys AAP 2.7, configures
+Automation Hub, enables the offline-token keepalive, enables Ollama and
+Automation Orchestrator, then enables Fleet, attaches the AAP subscription, and
+reconciles three started and registered RHEL 9 nodes. Product Demos is installed
+after licensing succeeds. A final strict `aap-demo wire` runs after all
+components are present, then the dashboard launches. Fleet image download
+and AAP subscription attachment require configured Red Hat credentials. Run
+`aap-demo fleet auth` once before the full demo. If the Automation Hub token is
+not configured, setup-pah prompts for that distinct token. Customer Portal and
+Automation Hub tokens remain separate in encrypted storage. Reruns reuse
+existing Fleet nodes instead of creating duplicates. Use `--no-open` to run the
+dashboard without opening a browser.
 
 ### Dashboard
 
@@ -272,7 +278,7 @@ journals older than seven days and reports the VM disk space reclaimed.
 `maintenance uninstall --apply` requires typing `UNINSTALL` and removes the CRC
 cluster, Fleet VMs and images, CRC downloads, generated credentials and caches,
 temporary swap, ingress trust entries, MCP/shell integration, CLI symlink, and
-completions. It preserves the source repository and Red Hat pull secret. For
+completions. It preserves the source repository and encrypted credential Vault. For
 noninteractive use, also set `AAP_DEMO_UNINSTALL_CONFIRM=UNINSTALL`.
 
 ## Credential storage
@@ -289,6 +295,24 @@ default. Use `aap-demo status --show-secrets` only in an interactive terminal.
 Keeping the encrypted Vault and its password in the same user-only directory
 prevents accidental Git disclosure, but it does not protect against compromise
 of the user account.
+
+### Offline-token keepalive
+
+Red Hat offline tokens can expire after 30 days without use. Enable the optional
+daily keepalive after configuring Fleet or Automation Hub credentials:
+
+```bash
+aap-demo credentials keepalive enable
+aap-demo credentials keepalive status
+aap-demo credentials keepalive run      # one-shot validation
+aap-demo credentials keepalive disable
+```
+
+The keepalive reads tokens directly from encrypted `env.yml`, exchanges each
+configured token for a short-lived access token, and immediately discards the
+result. It never stores or logs token values. Linux uses a persistent systemd
+user timer; macOS uses a LaunchAgent. A rejected token can trigger a desktop
+notification, while temporary network failures are logged for the next retry.
 
 ## Architecture
 

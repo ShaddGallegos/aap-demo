@@ -138,6 +138,8 @@ state_restore >"$TEST_DIR/output" 2>&1
 grep -q '^ADDONS=ao,fleet$' "$STATE_HOME/.aap-demo/config"
 test ! -e "$STATE_HOME/.aap-demo/newer"
 grep -q '^vault-password$' "$STATE_HOME/.ansible/conf/.vaultpass.txt"
+test "$(stat -c '%U' "$STATE_HOME/.ansible/conf")" = "$STATE_USER"
+test "$(stat -c '%a' "$STATE_HOME/.ansible/conf")" = 700
 echo "PASS: restore replaces newer managed state and recovers supporting credentials"
 
 previous="$latest"

@@ -378,7 +378,7 @@ _aap_demo_inventory_storage() {
 
 aap_demo_collect_system_inventory() {
   local secret_mode="${1:-omit}"
-  local cluster_state cluster_name generated_at addons addons_text host_os host_arch context kubernetes_version
+  local cluster_state cluster_name generated_at addons addons_text host_os host_arch aap_subscription context kubernetes_version
   local namespaces services pods namespace_status routes credentials api_keys ingress vm storage
 
   case "$secret_mode" in
@@ -394,6 +394,10 @@ aap_demo_collect_system_inventory() {
   generated_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
   host_os=$(grep '^PRETTY_NAME=' /etc/os-release 2>/dev/null | cut -d= -f2- | tr -d '"' || true)
   host_arch=$(uname -m 2>/dev/null || echo "unknown")
+  aap_subscription=""
+  if [ -s "${AAP_DEMO_DIR:-$HOME/.aap-demo}/fleet/aap_subscription_name" ]; then
+    aap_subscription=$(cat "${AAP_DEMO_DIR:-$HOME/.aap-demo}/fleet/aap_subscription_name")
+  fi
   if declare -F _addons_list >/dev/null; then
     addons_text=$(_addons_list)
   else
@@ -439,6 +443,7 @@ aap_demo_collect_system_inventory() {
     --arg repo "$AAP_DEMO_GIT_REMOTE" \
     --arg host_os "${host_os:-unknown}" \
     --arg host_arch "$host_arch" \
+    --arg aap_subscription "$aap_subscription" \
     --arg cluster_name "$cluster_name" \
     --arg cluster_state "$cluster_state" \
     --arg context "$context" \
@@ -467,7 +472,8 @@ aap_demo_collect_system_inventory() {
       },
       host: {
         os: $host_os,
-        architecture: $host_arch
+        architecture: $host_arch,
+        aap_subscription: ($aap_subscription | select(length > 0) // null)
       },
       cluster: {
         infrastructure: "OpenShift Local (CRC/MicroShift)",

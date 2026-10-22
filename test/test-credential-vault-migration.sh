@@ -49,4 +49,27 @@ ansible-vault view --vault-password-file "$HOME/.ansible/conf/.vaultpass.txt" \
   python3 -c 'import sys,yaml; assert (yaml.safe_load(sys.stdin) or {}).get("existing_setting") == "keep-me"'
 EOF
 
+mkdir -p "${TEST_HOME}/venv/bin"
+cat >"${TEST_HOME}/venv/bin/python3" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "-c" ] && [ "${2:-}" = "import yaml" ]; then
+  exit 1
+fi
+exit 97
+EOF
+chmod +x "${TEST_HOME}/venv/bin/python3"
+cat >"${TEST_HOME}/venv/bin/ansible-vault" <<'EOF'
+#!/usr/bin/env bash
+exit 98
+EOF
+chmod +x "${TEST_HOME}/venv/bin/ansible-vault"
+HOME="$TEST_HOME" PATH="${TEST_HOME}/venv/bin:${PATH}" REPO_ROOT="$REPO_ROOT" bash <<'EOF'
+set -euo pipefail
+_err() { printf 'ERROR: %s\n' "$*" >&2; }
+source "${REPO_ROOT}/includes/credential-vault.sh"
+[ "$(aap_demo_vault_get "aap_demo.redhat.offline_token")" = "legacy-token" ]
+[ "$AAP_DEMO_VAULT_PYTHON" != "$HOME/venv/bin/python3" ]
+[ "$AAP_DEMO_ANSIBLE_VAULT" != "$HOME/venv/bin/ansible-vault" ]
+EOF
+
 echo "PASS: merges legacy credentials into shared Vault"

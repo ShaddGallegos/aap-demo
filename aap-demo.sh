@@ -204,6 +204,8 @@ for arg in "$@"; do
     status)
       if [ "$COMMAND" = "fleet" ] && [ "${EXTRA_ARGS[0]:-}" = "auth" ]; then
         EXTRA_ARGS+=("$arg")
+      elif [ "$COMMAND" = "credentials" ]; then
+        EXTRA_ARGS+=("$arg")
       else
         COMMAND="$arg"
       fi
@@ -226,11 +228,15 @@ for arg in "$@"; do
         exit 1
       fi
       ;;
-    deploy | deploy-all | repair | clean | maintenance | stop | restart | service | setup | create | watch | update | config | redeploy | redeploy-all | redhat-status | rh-status | kubeconfig | ssh | idle | preflight | diagnose | must-gather | enable | disable | wire | system-info | dashboard | version | help | --help | -h | --version | -V)
-      case "$arg" in
-        --version | -V) COMMAND="version" ;;
-        *) COMMAND="$arg" ;;
-      esac
+    deploy | deploy-all | repair | clean | maintenance | credentials | stop | restart | service | setup | create | watch | update | config | redeploy | redeploy-all | redhat-status | rh-status | kubeconfig | ssh | idle | preflight | diagnose | must-gather | enable | disable | wire | system-info | dashboard | version | help | --help | -h | --version | -V)
+      if [ "$COMMAND" = "credentials" ]; then
+        EXTRA_ARGS+=("$arg")
+      else
+        case "$arg" in
+          --version | -V) COMMAND="version" ;;
+          *) COMMAND="$arg" ;;
+        esac
+      fi
       ;;
     destroy)
       # Fleet owns destroy as a subcommand; otherwise destroy is top-level.
@@ -284,7 +290,8 @@ for arg in "$@"; do
     *)
       # Commands that accept arbitrary args
       if [ "$COMMAND" = "must-gather" ] || [ "$COMMAND" = "clean" ] \
-        || [ "$COMMAND" = "fleet" ] || [ "$COMMAND" = "maintenance" ]; then
+        || [ "$COMMAND" = "fleet" ] || [ "$COMMAND" = "maintenance" ] \
+        || [ "$COMMAND" = "credentials" ]; then
         EXTRA_ARGS+=("$arg")
       elif [ -n "$COMMAND" ]; then
         echo "Unknown argument for '$COMMAND': $arg"
@@ -608,7 +615,9 @@ CORE COMMANDS:
     clean                           Remove AAP while keeping the cluster
     maintenance [--apply]           Preview or remove safe-to-delete VM data
     maintenance uninstall [--apply]
-                                    Fully remove aap-demo; preserves pull secret and source
+                                    Fully remove aap-demo; preserves encrypted Vault and source
+    credentials keepalive [enable|status|disable|run]
+                                    Manage opt-in offline-token keepalive
     redeploy                        Clean and redeploy AAP
     redeploy-all                    Destroy and rebuild cluster, AAP, and configured addons
     idle [true|false]               Show, scale down, or scale up AAP components
@@ -624,7 +633,7 @@ CORE COMMANDS:
 
 CLUSTER COMMANDS:
     create                          Create the OpenShift Local cluster
-    create --full-demo              Create cluster, AAP, AO/Ollama, Fleet, and dashboard
+    create --full-demo              Create AAP, PAH/Product Demos, AO/Ollama, Fleet, and dashboard
     destroy [--reset] [--skip-cache]
                                     Delete the cluster and optionally config/cache
     stop                            Stop Fleet VMs and the cluster
@@ -740,7 +749,7 @@ REQUIREMENTS:
 
     For all deployments:
     - kubectl
-    - Pull secret at ~/.aap-demo/pull-secret.txt (from console.redhat.com)
+    - Pull secret imported into encrypted ~/.ansible/conf/env.yml
 
 EOF
 }
@@ -749,12 +758,7 @@ EOF
 # Pull Secret Selection
 # -----------------------------------------------------------------------------
 determine_pull_secret() {
-  for path in "${PULL_SECRET_PATH:-}" "$HOME/.aap-demo/pull-secret" "$HOME/.aap-demo/pull-secret.txt" "$HOME/.aap-demo/pull-secret.json"; do
-    if [ -n "$path" ] && [ -f "$path" ]; then
-      echo "$path"
-      return
-    fi
-  done
+  aap_demo_pull_secret_get
 }
 
 # -----------------------------------------------------------------------------
@@ -2515,7 +2519,8 @@ cmd_create() {
 
 cmd_full_demo() {
   local QUIET=true
-  local ADDONS="mcp-server,ollama,ao,fleet"
+  local ADDONS="mcp-server,setup-pah,product-demos,ollama,ao,fleet"
+  local cluster_state
   export QUIET ADDONS
 
   echo ""
@@ -2524,9 +2529,11 @@ cmd_full_demo() {
   echo "Workflow:"
   echo "  1. Create OpenShift Local cluster"
   echo "  2. Deploy AAP 2.7"
-  echo "  3. Enable Ollama and Automation Orchestrator"
-  echo "  4. Enable Fleet and create three RHEL 9 nodes"
-  echo "  5. Reapply integrations and launch dashboard"
+  echo "  3. Configure Automation Hub and enable offline-token keepalive"
+  echo "  4. Enable Ollama and Automation Orchestrator"
+  echo "  5. Enable Fleet, attach the AAP subscription, and register three RHEL 9 nodes"
+  echo "  6. Enable Product Demos"
+  echo "  7. Reapply all integrations and launch dashboard"
   echo ""
 
   if ! cmd_fleet auth status; then
@@ -2536,8 +2543,15 @@ cmd_full_demo() {
     return 1
   fi
 
-  cmd_create || return 1
+  cluster_state=$(infra_get_state 2>/dev/null || echo "not_created")
+  if [ "$cluster_state" = running ]; then
+    echo "✓ OpenShift Local cluster is already running; reusing it"
+  else
+    cmd_create || return 1
+  fi
   AAP_DEMO_SKIP_STANDARD_AO=true cmd_deploy || return 1
+  cmd_enable setup-pah || return 1
+  cmd_credentials keepalive enable || return 1
   cmd_enable ollama || return 1
   AO_LLM_PROVIDER=ollama cmd_enable ao || return 1
   cmd_enable fleet || return 1
@@ -2549,21 +2563,30 @@ cmd_full_demo() {
     cmd_fleet add "$missing_nodes" --image rhel9 || return 1
   else
     echo "✓ Fleet already has ${fleet_nodes} node(s); reusing them"
-    cmd_fleet start || return 1
-    cmd_fleet register || return 1
   fi
+  cmd_fleet start || return 1
+  cmd_fleet register || return 1
 
+  cmd_enable product-demos || return 1
   cmd_wire || return 1
   aap_demo_generate_system_info || return 1
 
   echo ""
   echo "✓ Full demo environment is ready"
-  echo "  AAP, Automation Orchestrator, Ollama, and three Fleet nodes are configured."
+  echo "  AAP, Product Demos, Automation Orchestrator, Ollama, and three Fleet nodes are configured."
   echo "  Launching the aap-demo dashboard..."
   echo ""
 
   _aap_demo_release_operation_lock
   cmd_dashboard
+}
+
+cmd_credentials() {
+  if [ "${1:-}" != keepalive ]; then
+    _err "Usage: aap-demo credentials keepalive [enable|status|disable|run]"
+    return 2
+  fi
+  bash "${SCRIPT_DIR}/scripts/aap-demo-token-keepalive.sh" "${2:-status}"
 }
 
 # shellcheck source=includes/galaxy-auth.sh
@@ -2921,22 +2944,15 @@ setup_namespace() {
     pod-security.kubernetes.io/warn=privileged --overwrite
 
   # Create pull secret
-  PULL_SECRET=""
-  # Latest only needs registry.redhat.io credentials
-  for path in "${PULL_SECRET_PATH:-}" "$HOME/.aap-demo/pull-secret" "$HOME/.aap-demo/pull-secret.txt" "$HOME/.aap-demo/pull-secret.json"; do
-    if [ -n "$path" ] && [ -f "$path" ]; then
-      PULL_SECRET="$path"
-      break
-    fi
-  done
+  PULL_SECRET=$(aap_demo_pull_secret_get 2>/dev/null || true)
 
   if [ -n "$PULL_SECRET" ]; then
-    echo "Using pull secret: $PULL_SECRET"
+    echo "Using pull secret from encrypted Vault"
     kubectl delete secret redhat-operators-pull-secret -n "$NAMESPACE" 2>/dev/null || true
     kubectl create secret generic redhat-operators-pull-secret \
-      --from-file=.dockerconfigjson="$PULL_SECRET" \
+      --from-file=.dockerconfigjson=/dev/fd/3 \
       --type=kubernetes.io/dockerconfigjson \
-      -n "$NAMESPACE"
+      -n "$NAMESPACE" 3< <(printf '%s' "$PULL_SECRET")
 
     # Add pull secret to default ServiceAccount (merge, don't replace)
     # This ensures pods using the default SA (e.g., postgres, redis) can pull images
@@ -3752,7 +3768,7 @@ fi
 
 # Setup KUBECONFIG based on infrastructure type (skip for help/config commands)
 case "$COMMAND" in
-  help | --help | -h | config | update | version | "" | destroy | status | system-info | dashboard | service)
+  help | --help | -h | config | update | version | "" | destroy | status | system-info | dashboard | service | credentials)
     # These commands don't need cluster access
     ;;
   redeploy-all | deploy | deploy-all | redeploy | create | start | restart | preflight)
@@ -3790,6 +3806,11 @@ case "$COMMAND" in
   maintenance)
     cmd_maintenance "${EXTRA_ARGS[0]:-preview}" "$MAINTENANCE_APPLY"
     ;;
+  credentials)
+    _credentials_rc=0
+    cmd_credentials "${EXTRA_ARGS[@]}" || _credentials_rc=$?
+    [ "$_credentials_rc" -eq 0 ] || exit "$_credentials_rc"
+    ;;
   destroy)
     for _arg in "${EXTRA_ARGS[@]}"; do
       [ "$_arg" = "--reset" ] && _DESTROY_RESET=true
@@ -3812,7 +3833,9 @@ case "$COMMAND" in
     ;;
   create)
     if [ "$FULL_DEMO" = true ]; then
-      cmd_full_demo
+      if ! cmd_full_demo; then
+        exit 1
+      fi
     else
       cmd_create
     fi

@@ -23,8 +23,12 @@ export NAMESPACE GALAXY_TOKEN_FILE PAH_CONFIG_FILE
 echo "Setting up Private Automation Hub..."
 echo ""
 
-detect_galaxy_credentials
-if [ -z "${GALAXY_TOKEN:-}" ]; then
+credential_status=0
+prepare_galaxy_credentials || credential_status=$?
+if [ "$credential_status" -eq 2 ]; then
+  exit 1
+fi
+if [ "$credential_status" -ne 0 ]; then
   url="https://console.redhat.com/ansible/automation-hub/token"
 
   if command -v open >/dev/null 2>&1; then
@@ -60,10 +64,15 @@ if [ -z "${GALAXY_TOKEN:-}" ]; then
     echo "ERROR: Token must not be empty" >&2
     exit 1
   }
+  if ! galaxy_offline_token_status "$GALAXY_TOKEN"; then
+    echo "ERROR: Red Hat SSO rejected the Automation Hub offline token." >&2
+    echo "  Generate it at: $url" >&2
+    exit 1
+  fi
   aap_demo_vault_set "aap_demo.galaxy.offline_token" "$GALAXY_TOKEN"
 fi
 
-echo "✓ Galaxy token loaded from encrypted credential storage"
+echo "✓ Valid Automation Hub token loaded from encrypted credential storage"
 echo ""
 echo "Configuring AAP Private Automation Hub remotes..."
 configure_pah_remotes

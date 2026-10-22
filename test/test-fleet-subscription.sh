@@ -26,7 +26,7 @@ aap_demo_vault_get() {
     "$FLEET_CDN_USERNAME_KEY") printf 'cdn-user' ;;
     "$FLEET_CDN_PASSWORD_KEY") printf 'cdn-password' ;;
     "$FLEET_REDHAT_ACCOUNT_NUMBER_KEY") printf '5782799' ;;
-    "$FLEET_REDHAT_SUBSCRIPTION_ID_KEY") printf '26730217' ;;
+    "$FLEET_REDHAT_SUBSCRIPTION_ID_KEY") return 1 ;;
     *) return 1 ;;
   esac
 }
@@ -45,6 +45,7 @@ fleet_redhat_ensure_account_number() {
 
 # shellcheck source=../addons/fleet/fleet-aap.sh
 source "${REPO_ROOT}/addons/fleet/fleet-aap.sh"
+FLEET_DIR="${TEST_DIR}/fleet"
 
 # shellcheck disable=SC2329
 _fleet_aap_api() {
@@ -66,11 +67,11 @@ _fleet_aap_api() {
       ]'
       ;;
     "POST /config/attach/")
-      if [[ "$body" != *'"subscription_id": "26730217"'* ]]; then
+      if [[ "$body" != *'"subscription_id": "18689790"'* ]]; then
         return 1
       fi
       touch "${TEST_DIR}/attached"
-      printf '{"valid_key":true,"subscription_id":"26730217"}'
+      printf '{"valid_key":true,"subscription_id":"18689790"}'
       ;;
     *)
       return 1
@@ -86,12 +87,16 @@ if [ ! -e "${TEST_DIR}/attached" ]; then
   echo "FAIL: selected subscription was not attached" >&2
   exit 1
 fi
-if ! grep -q "^${FLEET_REDHAT_SUBSCRIPTION_ID_KEY}=26730217$" "${TEST_DIR}/vault-set"; then
+if ! grep -q "^${FLEET_REDHAT_SUBSCRIPTION_ID_KEY}=18689790$" "${TEST_DIR}/vault-set"; then
   echo "FAIL: selected subscription ID was not persisted" >&2
   exit 1
 fi
+if [ "$(cat "${FLEET_DIR}/aap_subscription_name")" != "Employee SKU" ]; then
+  echo "FAIL: selected subscription name was not persisted" >&2
+  exit 1
+fi
 
-echo "PASS: automatically attaches the stored account subscription"
+echo "PASS: automatically attaches and records the first account subscription"
 
 _fleet_aap_api() {
   printf ''

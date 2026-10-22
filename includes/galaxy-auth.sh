@@ -20,6 +20,49 @@ source "${GALAXY_AUTH_DIR}/credential-vault.sh"
 # shellcheck source=secure-curl.sh
 source "${GALAXY_AUTH_DIR}/secure-curl.sh"
 
+galaxy_offline_token_status() {
+  local token="$1" http_code
+  [ -n "$token" ] || return 1
+
+  http_code=$(printf '%s' "$token" | curl --silent --show-error \
+    --connect-timeout 15 --max-time 45 \
+    --output /dev/null --write-out '%{http_code}' \
+    --request POST \
+    --data-urlencode "grant_type=refresh_token" \
+    --data-urlencode "client_id=cloud-services" \
+    --data-urlencode "refresh_token@-" \
+    "https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token" \
+    2>/dev/null) || {
+      unset token
+      return 2
+    }
+  unset token
+  [ "$http_code" = 200 ]
+}
+
+prepare_galaxy_credentials() {
+  local rc
+  detect_galaxy_credentials || return 1
+
+  if [ -z "${GALAXY_TOKEN:-}" ]; then
+    return 1
+  fi
+  if galaxy_offline_token_status "$GALAXY_TOKEN"; then
+    return 0
+  else
+    rc=$?
+  fi
+  if [ "$rc" -eq 2 ]; then
+    _err "Unable to validate the Automation Hub token because Red Hat SSO is unreachable"
+    return 2
+  fi
+  printf "  ⚠ Stored Automation Hub token is invalid; removing it from encrypted storage\n" >&2
+  aap_demo_vault_delete "aap_demo.galaxy.offline_token" || return 1
+  GALAXY_TOKEN=""
+  export GALAXY_TOKEN
+  return 1
+}
+
 detect_galaxy_credentials() {
   GALAXY_TOKEN_FILE="${GALAXY_TOKEN_FILE:-$HOME/.aap-demo/galaxy-token}"
   PAH_CONFIG_FILE="${PAH_CONFIG_FILE:-$HOME/.aap-demo/pah-config.yml}"

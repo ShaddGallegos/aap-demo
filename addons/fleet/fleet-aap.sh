@@ -115,9 +115,8 @@ raise SystemExit(0 if valid and int(capacity or 0) > 0 else 1)
 
 _fleet_aap_select_subscription_id() {
   local subscriptions="$1"
-  local account_number="$2"
-  local preferred_id="$3"
-  SUBSCRIPTIONS="$subscriptions" ACCOUNT_NUMBER="$account_number" \
+  local preferred_id="$2"
+  SUBSCRIPTIONS="$subscriptions" \
     PREFERRED_ID="$preferred_id" python3 -c '
 import json
 import os
@@ -128,62 +127,57 @@ if isinstance(data, dict) and data.get("error"):
     print(data["error"], file=sys.stderr)
     raise SystemExit(1)
 rows = data if isinstance(data, list) else data.get("results", [])
-matches = [row for row in rows if str(row.get("account_number", "")) == os.environ["ACCOUNT_NUMBER"]]
-by_id = {}
-for row in matches:
-    subscription_id = str(row.get("subscription_id", ""))
-    if subscription_id:
-        by_id[subscription_id] = row
+matches = [row for row in rows if str(row.get("subscription_id", ""))]
+by_id = {str(row["subscription_id"]): row for row in matches}
 preferred = os.environ["PREFERRED_ID"]
 if preferred and preferred in by_id:
     print(preferred)
-elif len(by_id) == 1:
-    print(next(iter(by_id)))
+elif matches:
+    print(matches[0]["subscription_id"])
 else:
-    for subscription_id, row in by_id.items():
-        name = row.get("subscription_name") or row.get("product_name") or "Unnamed subscription"
-        print(f"{subscription_id}\t{name}", file=sys.stderr)
-    raise SystemExit(2)
+    raise SystemExit(1)
 '
 }
 
-_fleet_aap_prompt_subscription_id() {
+_fleet_aap_subscription_name() {
   local subscriptions="$1"
-  local account_number="$2"
-  if [ "${QUIET:-false}" = "true" ]; then
-    _err "Multiple AAP subscriptions match Red Hat account ${account_number}"
-    return 1
-  fi
-  if [ ! -r "$AAP_DEMO_SECRET_PROMPT_DEVICE" ]; then
-    _err "Cannot securely prompt for an AAP subscription ID"
-    return 1
-  fi
-
-  echo "Available AAP subscriptions for account ${account_number}:"
-  _fleet_aap_select_subscription_id "$subscriptions" "$account_number" "" \
-    >/dev/null || true
-  local subscription_id
-  printf "AAP subscription ID: " >"$AAP_DEMO_SECRET_PROMPT_OUTPUT"
-  IFS= read -r subscription_id <"$AAP_DEMO_SECRET_PROMPT_DEVICE"
-  if ! SUBSCRIPTIONS="$subscriptions" ACCOUNT_NUMBER="$account_number" \
+  local subscription_id="$2"
+  SUBSCRIPTIONS="$subscriptions" \
     SUBSCRIPTION_ID="$subscription_id" python3 -c '
 import json
 import os
-import sys
 data = json.loads(os.environ["SUBSCRIPTIONS"])
 rows = data if isinstance(data, list) else data.get("results", [])
-valid = any(
-    str(row.get("account_number", "")) == os.environ["ACCOUNT_NUMBER"]
-    and str(row.get("subscription_id", "")) == os.environ["SUBSCRIPTION_ID"]
-    for row in rows
-)
-raise SystemExit(0 if valid else 1)
-'; then
-    _err "Subscription ID ${subscription_id} is not available for account ${account_number}"
-    return 1
-  fi
-  aap_demo_vault_set "$FLEET_REDHAT_SUBSCRIPTION_ID_KEY" "$subscription_id" || return 1
-  FLEET_AAP_SUBSCRIPTION_ID="$subscription_id"
+for row in rows:
+    if str(row.get("subscription_id", "")) == os.environ["SUBSCRIPTION_ID"]:
+        print(row.get("subscription_name") or row.get("product_name") or "Unnamed subscription")
+        break
+'
+}
+
+_fleet_aap_describe_subscription_schema() {
+  local subscriptions="$1"
+  SUBSCRIPTIONS="$subscriptions" python3 -c '
+import json
+import os
+data = json.loads(os.environ["SUBSCRIPTIONS"])
+rows = data if isinstance(data, list) else data.get("results", [])
+keys = sorted({key for row in rows if isinstance(row, dict) for key in row})
+fields = (chr(44) + chr(32)).join(keys) if keys else "none"
+top_level = (chr(44) + chr(32)).join(sorted(data)) if isinstance(data, dict) else "array"
+print(f"  Subscription response keys: {top_level}; rows: {len(rows)}; row fields: {fields}")
+' || true
+}
+
+_fleet_aap_record_subscription_name() {
+  local name="$1" target tmp
+  [ -n "$name" ] || return 0
+  mkdir -p "$FLEET_DIR"
+  target="$FLEET_DIR/aap_subscription_name"
+  tmp=$(mktemp "$FLEET_DIR/.aap_subscription_name.XXXXXX")
+  printf '%s\n' "$name" >"$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$target"
 }
 
 _fleet_aap_ensure_subscription() {
@@ -225,21 +219,28 @@ print(json.dumps({
     _err "AAP subscription API returned an invalid or empty response"
     return 1
   fi
-
-  local subscription_id selection_status
-  if subscription_id=$(_fleet_aap_select_subscription_id \
-    "$subscriptions" "$account_number" "$preferred_id"); then
-    selection_status=0
-  else
-    selection_status=$?
+  local subscription_error
+  subscription_error=$(python3 -c '
+import json
+import sys
+data = json.load(sys.stdin)
+print(data.get("error") or data.get("detail") or "")
+' <<<"$subscriptions" 2>/dev/null || true)
+  if [ -n "$subscription_error" ]; then
+    _err "AAP subscription lookup failed: $subscription_error"
+    return 1
   fi
-  if [ "$selection_status" -eq 2 ]; then
-    _fleet_aap_prompt_subscription_id "$subscriptions" "$account_number" || return 1
-    subscription_id="$FLEET_AAP_SUBSCRIPTION_ID"
-  elif [ "$selection_status" -ne 0 ] || [ -z "$subscription_id" ]; then
+
+  local subscription_id subscription_name
+  if ! subscription_id=$(_fleet_aap_select_subscription_id \
+    "$subscriptions" "$preferred_id") \
+    || [ -z "$subscription_id" ]; then
+    _fleet_aap_describe_subscription_schema "$subscriptions"
     _err "No AAP subscription is available for Red Hat account ${account_number}"
     return 1
   fi
+  subscription_name=$(_fleet_aap_subscription_name \
+    "$subscriptions" "$subscription_id")
 
   aap_demo_vault_set "$FLEET_REDHAT_SUBSCRIPTION_ID_KEY" "$subscription_id" || return 1
   payload=$(SUBSCRIPTION_ID="$subscription_id" python3 -c '
@@ -268,7 +269,8 @@ print(data.get("error") or data.get("detail") or "unknown error")
     _err "AAP subscription attachment failed: $detail"
     return 1
   fi
-  echo "  ✓ AAP subscription attached"
+  _fleet_aap_record_subscription_name "$subscription_name" || return 1
+  echo "  ✓ AAP subscription attached: ${subscription_name:-subscription ${subscription_id}}"
 }
 
 # -----------------------------------------------------------------------------

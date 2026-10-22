@@ -12,6 +12,11 @@ cmd_create() {
   printf 'create quiet=%s addons=%s\n' "$QUIET" "$ADDONS" >>"$LOG_FILE"
 }
 
+# shellcheck disable=SC2329
+infra_get_state() {
+  printf 'not_created'
+}
+
 cmd_deploy() {
   printf 'deploy skip_ao=%s\n' "${AAP_DEMO_SKIP_STANDARD_AO:-false}" >>"$LOG_FILE"
 }
@@ -22,6 +27,10 @@ cmd_enable() {
 
 cmd_fleet() {
   printf 'fleet %s\n' "$*" >>"$LOG_FILE"
+}
+
+cmd_credentials() {
+  printf 'credentials %s\n' "$*" >>"$LOG_FILE"
 }
 
 # shellcheck disable=SC2329
@@ -51,12 +60,17 @@ cmd_full_demo >/dev/null
 
 cat >"$LOG_FILE.expected" <<'EOF'
 fleet auth status
-create quiet=true addons=mcp-server,ollama,ao,fleet
+create quiet=true addons=mcp-server,setup-pah,product-demos,ollama,ao,fleet
 deploy skip_ao=true
+enable setup-pah provider=unset
+credentials keepalive enable
 enable ollama provider=unset
 enable ao provider=ollama
 enable fleet provider=unset
 fleet add 3 --image rhel9
+fleet start
+fleet register
+enable product-demos provider=unset
 wire
 system-info
 release-lock
@@ -83,6 +97,18 @@ fi
 grep -Fq 'fleet start' "$LOG_FILE"
 grep -Fq 'fleet register' "$LOG_FILE"
 
+# shellcheck disable=SC2329
+infra_get_state() {
+  printf 'running'
+}
+: >"$LOG_FILE"
+cmd_full_demo >/dev/null
+if grep -Fq 'create quiet=' "$LOG_FILE"; then
+  echo "FAIL: full demo tried to recreate an already-running cluster"
+  exit 1
+fi
+grep -Fq 'deploy skip_ao=true' "$LOG_FILE"
+
 if QUIET=true "$AAP_DEMO_SH" status --full-demo >/tmp/aap-demo-full-demo-error 2>&1; then
   echo "FAIL: --full-demo was accepted outside create"
   rm -f /tmp/aap-demo-full-demo-error
@@ -90,5 +116,20 @@ if QUIET=true "$AAP_DEMO_SH" status --full-demo >/tmp/aap-demo-full-demo-error 2
 fi
 grep -Fq -- "--full-demo is supported only by create" /tmp/aap-demo-full-demo-error
 rm -f /tmp/aap-demo-full-demo-error
+
+unconfigured_home=$(mktemp -d)
+if HOME="$unconfigured_home" QUIET=true AAP_DEMO_DISABLE_LOCK=true \
+  "$AAP_DEMO_SH" create --full-demo >"$unconfigured_home/output" 2>&1; then
+  echo "FAIL: full demo accepted missing Fleet credentials"
+  rm -rf "$unconfigured_home"
+  exit 1
+fi
+grep -Fq 'Full demo requires valid Red Hat Fleet download credentials' "$unconfigured_home/output"
+if grep -Fq 'failed unexpectedly' "$unconfigured_home/output"; then
+  echo "FAIL: expected full-demo preflight failure was reported as an internal error"
+  rm -rf "$unconfigured_home"
+  exit 1
+fi
+rm -rf "$unconfigured_home"
 
 echo "PASS: create --full-demo uses the required fail-fast orchestration order"

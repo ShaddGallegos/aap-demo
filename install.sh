@@ -3,7 +3,6 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ORIGINAL_PATH="$PATH"
 export PATH="$HOME/.local/bin:$PATH"
 
 case "$(uname -s)" in
@@ -82,6 +81,15 @@ if [ "${1:-}" = "--uninstall" ] || [ "${1:-}" = "uninstall" ]; then
   rm -f ~/.local/bin/aap-demo
   rm -f ~/.zsh/completions/_aap-demo
   rm -f ~/.local/share/bash-completion/completions/aap-demo
+  if [ -f ~/.bashrc ]; then
+    sed -i.bak \
+      '/^# >>> aap-demo bash completion >>>$/,/^# <<< aap-demo bash completion <<<$/d' \
+      ~/.bashrc
+    sed -i.bak \
+      '/^# >>> aap-demo PATH >>>$/,/^# <<< aap-demo PATH <<<$/d' \
+      ~/.bashrc
+    rm -f ~/.bashrc.bak
+  fi
   echo "  ✓ Binary and completions removed"
   if [ -f "${AAP_DEMO_CONFIG:-$HOME/.aap-demo/config}" ]; then
     config_file="${AAP_DEMO_CONFIG:-$HOME/.aap-demo/config}"
@@ -222,15 +230,42 @@ echo "  Symlink: ~/.local/bin/aap-demo -> ${SCRIPT_DIR}/aap-demo.sh"
 # Detect OS and install completions
 SHELL_NAME=$(basename "${SHELL:-/bin/bash}")
 
+# Install Bash completion on every supported platform, regardless of the current
+# login shell, so switching to Bash does not require reinstalling aap-demo.
+mkdir -p ~/.local/share/bash-completion/completions
+cp "${SCRIPT_DIR}/scripts/aap-demo-completion.bash" ~/.local/share/bash-completion/completions/aap-demo
+echo "  Completion: ~/.local/share/bash-completion/completions/aap-demo (bash)"
+
+if ! grep -q '^# >>> aap-demo PATH >>>$' ~/.bashrc 2>/dev/null; then
+  cat >>~/.bashrc <<'EOF'
+
+# >>> aap-demo PATH >>>
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) export PATH="$HOME/.local/bin:$PATH" ;;
+esac
+# <<< aap-demo PATH <<<
+EOF
+  echo "  Added ~/.local/bin to PATH in ~/.bashrc"
+fi
+
+if ! grep -q '^# >>> aap-demo bash completion >>>$' ~/.bashrc 2>/dev/null; then
+  cat >>~/.bashrc <<'EOF'
+
+# >>> aap-demo bash completion >>>
+if [ -r "$HOME/.local/share/bash-completion/completions/aap-demo" ]; then
+  source "$HOME/.local/share/bash-completion/completions/aap-demo"
+fi
+# <<< aap-demo bash completion <<<
+EOF
+  echo "  Added Bash completion loader to ~/.bashrc"
+fi
+
 if [ "$(uname)" = "Darwin" ]; then
-  # macOS: install both zsh (default) and bash completions
+  # macOS: also install zsh completion because zsh is the default shell.
   mkdir -p ~/.zsh/completions
   cp "${SCRIPT_DIR}/scripts/aap-demo-completion.zsh" ~/.zsh/completions/_aap-demo
   echo "  Completion: ~/.zsh/completions/_aap-demo (zsh)"
-
-  mkdir -p ~/.local/share/bash-completion/completions
-  cp "${SCRIPT_DIR}/scripts/aap-demo-completion.bash" ~/.local/share/bash-completion/completions/aap-demo
-  echo "  Completion: ~/.local/share/bash-completion/completions/aap-demo (bash)"
 
   # Ensure zsh fpath includes completions dir
   if ! grep -q 'fpath=(~/.zsh/completions' ~/.zshrc 2>/dev/null; then
@@ -250,22 +285,12 @@ else
       echo 'autoload -Uz compinit && compinit' >>~/.zshrc
       echo "  Added completion path to ~/.zshrc"
     fi
-  else
-    mkdir -p ~/.local/share/bash-completion/completions
-    cp "${SCRIPT_DIR}/scripts/aap-demo-completion.bash" ~/.local/share/bash-completion/completions/aap-demo
-    echo "  Completion: ~/.local/share/bash-completion/completions/aap-demo"
   fi
 fi
 
-# Check PATH
-if [[ ":$ORIGINAL_PATH:" != *":$HOME/.local/bin:"* ]]; then
-  echo ""
-  echo "NOTE: ~/.local/bin is not in your PATH. Add it with:"
-  echo "  echo 'export PATH=\$HOME/.local/bin:\$PATH' >> ~/.${SHELL_NAME}rc"
-fi
-
 echo ""
-echo "Done. Reload completions with:"
+echo "Done. Completion will load automatically in new shell sessions."
+echo "Load it in this shell with:"
 if [ "$SHELL_NAME" = "zsh" ]; then
   echo "  exec zsh"
 else

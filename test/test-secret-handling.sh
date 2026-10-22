@@ -41,6 +41,20 @@ grep -q 'admin:password-fixture' "$TEST_CURL_CONFIG"
 grep -q 'Authorization: Bearer token-fixture' "$TEST_CURL_CONFIG"
 grep -q 'body-fixture' "$TEST_CURL_PAYLOAD"
 
+: >"$TEST_CURL_ARGS"
+: >"$TEST_CURL_PAYLOAD"
+printf '%s' '{"subscriptions_username":"stdin-user","subscriptions_password":"stdin-password"}' |
+  curl -sk -u 'admin:stdin-admin-password' \
+    -H 'Content-Type: application/json' \
+    --data-binary @- \
+    https://example.invalid/
+if grep -q 'stdin-user\|stdin-password\|stdin-admin-password' "$TEST_CURL_ARGS"; then
+  echo "FAIL: stdin secret was present in curl process arguments" >&2
+  exit 1
+fi
+grep -q 'subscriptions_username.*stdin-user' "$TEST_CURL_PAYLOAD"
+grep -q 'subscriptions_password.*stdin-password' "$TEST_CURL_PAYLOAD"
+
 if "${REPO_ROOT}/aap-demo.sh" status --show-secrets </dev/null >/dev/null 2>"$TEST_DIR/status-error"; then
   echo "FAIL: redirected status disclosed secrets" >&2
   exit 1

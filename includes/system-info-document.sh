@@ -158,6 +158,7 @@ Generated: \`$(jq -r '.generated_at' "$inventory")\`
 - Kubeconfig: \`$(jq -r '.cluster.kubeconfig' "$inventory")\`
 - Host OS: \`$(jq -r '.host.os' "$inventory")\`
 - Host architecture: \`$(jq -r '.host.architecture' "$inventory")\`
+- AAP subscription: \`$(jq -r '.host.aap_subscription // "Not attached"' "$inventory")\`
 - Enabled add-ons: \`$(jq -r '.addons | if length == 0 then "none" else join(", ") end' "$inventory")\`
 
 ## VM

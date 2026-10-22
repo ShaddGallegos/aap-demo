@@ -13,6 +13,8 @@ SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 # shellcheck source=includes/aap-demo-paths.sh
 source "${SCRIPT_DIR}/includes/aap-demo-paths.sh"
+# shellcheck source=includes/credential-vault.sh
+source "${SCRIPT_DIR}/includes/credential-vault.sh"
 
 # Source CRC infra backend (sets CRC_SSH_KEY, CRC_SSH_OPTS)
 # shellcheck source=includes/infra-crc.sh
@@ -34,6 +36,24 @@ _GREEN='\033[0;32m'
 _YELLOW='\033[0;33m'
 _BOLD='\033[1m'
 _NC='\033[0m'
+
+_crc_start_with_pull_secret() (
+  local runtime_dir pull_secret_file
+  runtime_dir="${XDG_RUNTIME_DIR:-${AAP_DEMO_DIR:-$HOME/.aap-demo}/run}"
+  mkdir -p "$runtime_dir"
+  if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+    chmod 700 "$runtime_dir"
+  fi
+
+  umask 077
+  pull_secret_file=$(mktemp "$runtime_dir/aap-demo-pull-secret.XXXXXX")
+  trap 'rm -f -- "$pull_secret_file"' EXIT HUP INT TERM
+  printf '%s' "$PULL_SECRET_VALUE" >"$pull_secret_file"
+  chmod 600 "$pull_secret_file"
+
+  crc start --pull-secret-file "$pull_secret_file" 2>&1 |
+    tee "${1:-/tmp/crc-start.log}"
+)
 
 _save_config_key() {
   local key="$1" value="$2"
@@ -111,8 +131,8 @@ _ensure_crc_stable_after_create() {
   fi
 
   echo "WARNING: CRC did not remain healthy after setup; restarting CRC once..." >&2
-  if [ -n "${PULL_SECRET_PATH:-}" ] && [ -f "$PULL_SECRET_PATH" ]; then
-    crc start -p "$PULL_SECRET_PATH" >/tmp/crc-recovery.log 2>&1 || return 1
+  if [ -n "${PULL_SECRET_VALUE:-}" ]; then
+    _crc_start_with_pull_secret /tmp/crc-recovery.log >/dev/null || return 1
   else
     crc start >/tmp/crc-recovery.log 2>&1 || return 1
   fi
@@ -224,6 +244,76 @@ COREFILE_EOF
   fi
 }
 
+_is_mingw() {
+  case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) return 0 ;; *) return 1 ;; esac
+}
+
+_crc_daemon_api_ready() {
+  local socket
+  for socket in "$HOME/.crc/sockets/crc-http.sock" "$HOME/.crc/crc-http.sock"; do
+    [ -S "$socket" ] || continue
+    curl --silent --fail --max-time 2 --unix-socket "$socket" \
+      http://localhost/api/version >/dev/null 2>&1 && return 0
+  done
+  return 1
+}
+
+_crc_stop_unmanaged_daemons() {
+  local main_pid pid proc proc_root arg0 arg1 attempt
+  proc_root="${AAP_DEMO_PROC_ROOT:-/proc}"
+  main_pid=$(systemctl --user show crc-daemon.service \
+    --property MainPID --value 2>/dev/null || printf '0')
+
+  for proc in "$proc_root"/[0-9]*/cmdline; do
+    [ -f "$proc" ] || continue
+    pid="${proc#"$proc_root"/}"
+    pid="${pid%/cmdline}"
+    [ "$pid" != "$main_pid" ] || continue
+    IFS= read -r -d '' arg0 <"$proc" 2>/dev/null || continue
+    IFS= read -r -d '' arg1 < <(tail -c "+$((${#arg0} + 2))" "$proc" 2>/dev/null) || true
+    [ "${arg0##*/}" = crc ] && [ "$arg1" = daemon ] || continue
+
+    echo "  Stopping stale unmanaged CRC daemon (PID ${pid})..."
+    kill "$pid" 2>/dev/null || continue
+    for attempt in 1 2 3 4 5; do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 1
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+  done
+}
+
+_crc_daemon_ensure() {
+  local attempt
+
+  if _is_mingw || [ "$(uname)" = "Darwin" ]; then
+    return 0
+  fi
+  if _crc_daemon_api_ready; then
+    return 0
+  fi
+
+  if systemctl --user cat crc-http.socket crc-vsock.socket \
+    >/dev/null 2>&1; then
+    _crc_stop_unmanaged_daemons
+    systemctl --user daemon-reload || return 1
+    systemctl --user reset-failed \
+      crc-daemon.service crc-http.socket crc-vsock.socket 2>/dev/null || true
+    systemctl --user restart crc-http.socket crc-vsock.socket || return 1
+  else
+    echo "Starting CRC daemon..."
+    crc daemon >>"${AAP_DEMO_CRC_DAEMON_LOG:-/tmp/crc-daemon.log}" 2>&1 &
+  fi
+
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    _crc_daemon_api_ready && return 0
+    sleep 1
+  done
+  return 1
+}
+
 # When sourced for CoreDNS only (aap-demo start), skip cluster creation.
 [[ "${AAP_DEMO_CONFIGURE_COREDNS_ONLY:-}" == "1" ]] && return 0
 
@@ -246,16 +336,12 @@ if ! command -v crc &>/dev/null; then
   exit 1
 fi
 
-# Ensure CRC daemon is running (Linux only — macOS/Windows manage the daemon)
-_is_mingw() {
-  case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) return 0 ;; *) return 1 ;; esac
-}
-
-if ! _is_mingw && [ "$(uname)" != "Darwin" ] && ! [ -S ~/.crc/crc-http.sock ]; then
-  echo "Starting CRC daemon..."
-  crc daemon &>/dev/null &
-  disown
-  sleep 3
+if ! _is_mingw && [ "$(uname)" != "Darwin" ] \
+  && systemctl --user cat crc-http.socket crc-vsock.socket >/dev/null 2>&1; then
+  _crc_daemon_ensure || {
+    echo "ERROR: CRC daemon failed to become ready" >&2
+    exit 1
+  }
 fi
 
 # Check if already running
@@ -418,41 +504,47 @@ printf "${_GREEN}▸${_NC} Resources: ${CRC_CPUS} CPUs, $((CRC_MEMORY / 1024))GB
 # Setup CRC (if needed)
 # ---------------------------------------------------------------------------
 if [ "$CRC_STATUS" = "Unknown" ]; then
+  crc_setup_rc=0
   printf "${_GREEN}▸${_NC} Running CRC setup...\n"
-  crc setup --show-progressbars 2>&1 | { grep -E "^level=info|^  " | sed 's/level=info msg="/  /' | sed 's/"$//'; } || true
+  if crc setup --show-progressbars 2>&1 |
+    { grep -E "^level=info|^  " | sed 's/level=info msg="/  /' | sed 's/"$//' || true; }; then
+    crc_setup_rc=${PIPESTATUS[0]}
+  else
+    crc_setup_rc=${PIPESTATUS[0]}
+  fi
+  if [ "$crc_setup_rc" -ne 0 ]; then
+    echo "ERROR: CRC setup failed" >&2
+    exit 1
+  fi
+fi
+
+if ! _crc_daemon_ensure; then
+  echo "ERROR: CRC daemon failed to become ready after setup" >&2
+  echo "  Check: systemctl --user status crc-daemon.service crc-http.socket crc-vsock.socket" >&2
+  exit 1
 fi
 
 # ---------------------------------------------------------------------------
 # Find pull secret
 # ---------------------------------------------------------------------------
-PULL_SECRET_PATH="${PULL_SECRET_PATH:-}"
-if [ -z "$PULL_SECRET_PATH" ]; then
-  for ps in "$HOME/.aap-demo/pull-secret.json" "$HOME/.aap-demo/pull-secret.txt"; do
-    if [ -f "$ps" ]; then
-      PULL_SECRET_PATH="$ps"
-      break
-    fi
-  done
-fi
-
-if [ -z "$PULL_SECRET_PATH" ] || [ ! -f "$PULL_SECRET_PATH" ]; then
+PULL_SECRET_VALUE=$(aap_demo_pull_secret_get 2>/dev/null || true)
+if [ -z "$PULL_SECRET_VALUE" ]; then
   printf "${_RED}▸${_NC} Pull secret not found\n"
   echo ""
   echo "  Download from: https://console.redhat.com/openshift/install/pull-secret"
-  echo "  Save to: ~/.aap-demo/pull-secret.txt"
+  echo "  Import with: PULL_SECRET_PATH=/path/to/pull-secret.txt aap-demo create"
   exit 1
 fi
 
-printf "${_GREEN}▸${_NC} Pull secret: ${PULL_SECRET_PATH}\n"
+printf "${_GREEN}▸${_NC} Pull secret: encrypted Vault\n"
 
 # ---------------------------------------------------------------------------
 # Start CRC
 # ---------------------------------------------------------------------------
 printf "${_GREEN}▸${_NC} Starting CRC (this takes 3-5 minutes)...\n"
-if ! crc start -p "$PULL_SECRET_PATH" 2>&1 | tee /tmp/crc-start.log; then
-  # Retry: pipe pull secret via --pull-secret-file - (non-TTY workaround)
-  echo "  Retrying with stdin pull secret..."
-  if ! cat "$PULL_SECRET_PATH" | crc start --pull-secret-file - 2>&1 | tee /tmp/crc-start.log; then
+if ! _crc_start_with_pull_secret /tmp/crc-start.log; then
+  echo "  Retrying CRC start..."
+  if ! _crc_start_with_pull_secret /tmp/crc-start.log; then
     echo "ERROR: crc start failed — see /tmp/crc-start.log"
     exit 1
   fi

@@ -45,6 +45,9 @@ curl() {
         payload="$2"
         payload_option="$1"
         shift 2
+        if [ "$payload" = "@-" ]; then
+          payload=$(cat)
+        fi
         ;;
       *)
         arguments+=("$1")

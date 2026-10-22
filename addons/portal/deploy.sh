@@ -292,21 +292,22 @@ grant_portal_sccs() {
 }
 
 copy_pull_secret_to_portal_namespace() {
+  local encoded_pull_secret
   if ! kubectl get secret redhat-operators-pull-secret -n "$AAP_NAMESPACE" &>/dev/null; then
     return 0
   fi
 
-  mkdir -p "$PORTAL_DIR"
-  chmod 700 "$PORTAL_DIR"
-  kubectl get secret redhat-operators-pull-secret -n "$AAP_NAMESPACE" \
-    -o jsonpath='{.data.\.dockerconfigjson}' 2>/dev/null | base64 -d >"$PORTAL_DIR/pull-secret.json" || return 0
-  chmod 600 "$PORTAL_DIR/pull-secret.json"
+  encoded_pull_secret=$(kubectl get secret redhat-operators-pull-secret -n "$AAP_NAMESPACE" \
+    -o jsonpath='{.data.\.dockerconfigjson}' 2>/dev/null || true)
+  [ -n "$encoded_pull_secret" ] || return 0
+  rm -f "$PORTAL_DIR/pull-secret.json"
 
   kubectl delete secret redhat-operators-pull-secret -n "$PORTAL_NAMESPACE" 2>/dev/null || true
   kubectl create secret generic redhat-operators-pull-secret \
-    --from-file=.dockerconfigjson="$PORTAL_DIR/pull-secret.json" \
+    --from-file=.dockerconfigjson=/dev/fd/3 \
     --type=kubernetes.io/dockerconfigjson \
-    -n "$PORTAL_NAMESPACE" 2>/dev/null || true
+    -n "$PORTAL_NAMESPACE" 3< <(printf '%s' "$encoded_pull_secret" | base64 -d) \
+    2>/dev/null || true
 
   local existing_secrets
   existing_secrets=$(kubectl get serviceaccount default -n "$PORTAL_NAMESPACE" \

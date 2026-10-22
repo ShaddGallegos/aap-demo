@@ -15,6 +15,14 @@ Authentication is optional but recommended for accessing certified collections l
 ## Getting a console.redhat.com Token
 
 Red Hat Automation Hub offline tokens allow CLI access to certified collections.
+They are distinct from Customer Portal API offline tokens generated at
+`access.redhat.com/management/api`. Customer Portal tokens use the `rhsm-api`
+OAuth client; Automation Hub tokens use `cloud-services`.
+
+`aap-demo enable setup-pah` validates the Automation Hub credential before
+configuring remotes. The two tokens remain separate in encrypted storage. Red
+Hat requires the Automation Hub token to be generated interactively; the
+Customer Portal API does not provide an endpoint that can generate it.
 
 ### Steps
 

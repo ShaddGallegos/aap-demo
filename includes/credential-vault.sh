@@ -3,6 +3,9 @@
 
 if [ -n "${_AAP_DEMO_CREDENTIAL_VAULT_LOADED:-}" ]; then return 0; fi
 _AAP_DEMO_CREDENTIAL_VAULT_LOADED=1
+if ! declare -f _err >/dev/null 2>&1; then
+  _err() { printf 'ERROR: %s\n' "$*" >&2; }
+fi
 
 _AAP_DEMO_VAULT_PATHS_EXPLICIT=false
 if [ -n "${AAP_DEMO_VAULT_FILE+x}" ] || [ -n "${AAP_DEMO_VAULT_PASSWORD_FILE+x}" ]; then
@@ -16,20 +19,56 @@ AAP_DEMO_LEGACY_VAULT_FILE="${AAP_DEMO_LEGACY_VAULT_FILE:-$HOME/.ansible/conf/en
 AAP_DEMO_LEGACY_VAULT_PASSWORD_FILE="${AAP_DEMO_LEGACY_VAULT_PASSWORD_FILE:-$HOME/.ansible/conf/.vaultpass_microshift.txt}"
 AAP_DEMO_SECRET_PROMPT_DEVICE="${AAP_DEMO_SECRET_PROMPT_DEVICE:-/dev/tty}"
 AAP_DEMO_SECRET_PROMPT_OUTPUT="${AAP_DEMO_SECRET_PROMPT_OUTPUT:-/dev/tty}"
+AAP_DEMO_VAULT_PYTHON="${AAP_DEMO_VAULT_PYTHON:-}"
+AAP_DEMO_ANSIBLE_VAULT="${AAP_DEMO_ANSIBLE_VAULT:-}"
 
 _aap_demo_private_mode() {
   chmod 600 "$1"
 }
 
 _aap_demo_vault_require_tools() {
-  if ! command -v ansible-vault >/dev/null 2>&1; then
-    _err "ansible-vault is required for encrypted credential storage"
+  local candidate current_python current_vault
+
+  if [ -n "$AAP_DEMO_ANSIBLE_VAULT" ]; then
+    if ! "$AAP_DEMO_ANSIBLE_VAULT" --version >/dev/null 2>&1; then
+      _err "Configured ansible-vault executable is not usable: $AAP_DEMO_ANSIBLE_VAULT"
+      return 1
+    fi
+  else
+    current_vault=$(command -v ansible-vault 2>/dev/null || true)
+    for candidate in "$current_vault" /usr/bin/ansible-vault /usr/local/bin/ansible-vault \
+      /opt/homebrew/bin/ansible-vault; do
+      [ -n "$candidate" ] && [ -x "$candidate" ] || continue
+      if "$candidate" --version >/dev/null 2>&1; then
+        AAP_DEMO_ANSIBLE_VAULT="$candidate"
+        break
+      fi
+    done
+    if [ -z "$AAP_DEMO_ANSIBLE_VAULT" ]; then
+      _err "ansible-vault is required for encrypted credential storage"
+      return 1
+    fi
+  fi
+
+  if [ -n "$AAP_DEMO_VAULT_PYTHON" ]; then
+    if "$AAP_DEMO_VAULT_PYTHON" -c 'import yaml' >/dev/null 2>&1; then
+      return 0
+    fi
+    _err "Configured Vault Python cannot import PyYAML: $AAP_DEMO_VAULT_PYTHON"
     return 1
   fi
-  if ! python3 -c 'import yaml' >/dev/null 2>&1; then
-    _err "Python PyYAML is required for encrypted credential storage"
-    return 1
-  fi
+
+  current_python=$(command -v python3 2>/dev/null || true)
+  for candidate in "$current_python" /usr/bin/python3 /usr/local/bin/python3 /opt/homebrew/bin/python3; do
+    [ -n "$candidate" ] && [ -x "$candidate" ] || continue
+    if "$candidate" -c 'import yaml' >/dev/null 2>&1; then
+      AAP_DEMO_VAULT_PYTHON="$candidate"
+      return 0
+    fi
+  done
+
+  _err "Python PyYAML is required for encrypted credential storage"
+  return 1
 }
 
 _aap_demo_vault_migrate_legacy() {
@@ -76,7 +115,7 @@ _aap_demo_vault_migrate_legacy() {
     chmod 600 "$plain_target" "$plain_source" "$merged" "$encrypted"
 
     if [ -s "$AAP_DEMO_VAULT_FILE" ]; then
-      if ! ansible-vault view --vault-password-file "$AAP_DEMO_VAULT_PASSWORD_FILE" \
+      if ! "$AAP_DEMO_ANSIBLE_VAULT" view --vault-password-file "$AAP_DEMO_VAULT_PASSWORD_FILE" \
         "$AAP_DEMO_VAULT_FILE" >"$plain_target"; then
         rm -f "$plain_target" "$plain_source" "$merged" "$encrypted"
         _err "Unable to decrypt $AAP_DEMO_VAULT_FILE; legacy credentials were not changed"
@@ -85,14 +124,14 @@ _aap_demo_vault_migrate_legacy() {
     else
       printf '{}\n' >"$plain_target"
     fi
-    if ! ansible-vault view --vault-password-file "$source_password" \
+    if ! "$AAP_DEMO_ANSIBLE_VAULT" view --vault-password-file "$source_password" \
       "$source_file" >"$plain_source"; then
       rm -f "$plain_target" "$plain_source" "$merged" "$encrypted"
       _err "Unable to decrypt legacy Vault: $source_file"
       return 1
     fi
 
-    if ! python3 - "$plain_target" "$plain_source" >"$merged" <<'PY'
+    if ! "$AAP_DEMO_VAULT_PYTHON" - "$plain_target" "$plain_source" >"$merged" <<'PY'
 import sys
 import yaml
 
@@ -124,7 +163,7 @@ PY
       return 1
     fi
 
-    if ! ansible-vault encrypt --vault-password-file "$AAP_DEMO_VAULT_PASSWORD_FILE" \
+    if ! "$AAP_DEMO_ANSIBLE_VAULT" encrypt --vault-password-file "$AAP_DEMO_VAULT_PASSWORD_FILE" \
       --output "$encrypted" "$merged" >/dev/null; then
       rm -f "$plain_target" "$plain_source" "$merged" "$encrypted"
       _err "Unable to encrypt merged Vault data"
@@ -150,7 +189,7 @@ _aap_demo_vault_ensure_password_file() {
     return 0
   fi
   umask 077
-  if ! python3 -c 'import secrets; print(secrets.token_urlsafe(48))' \
+  if ! "$AAP_DEMO_VAULT_PYTHON" -c 'import secrets; print(secrets.token_urlsafe(48))' \
     >"$AAP_DEMO_VAULT_PASSWORD_FILE"; then
     rm -f "$AAP_DEMO_VAULT_PASSWORD_FILE"
     _err "Unable to generate the Ansible Vault password file"
@@ -178,7 +217,7 @@ _aap_demo_vault_ensure_file() {
   encrypted=$(mktemp "${vault_dir}/.env-aap-demo.vault.XXXXXX")
   chmod 600 "$plain" "$encrypted"
   printf 'aap_demo: {}\n' >"$plain"
-  if ! ansible-vault encrypt \
+  if ! "$AAP_DEMO_ANSIBLE_VAULT" encrypt \
     --vault-password-file "$AAP_DEMO_VAULT_PASSWORD_FILE" \
     --output "$encrypted" "$plain" >/dev/null; then
     rm -f "$plain" "$encrypted"
@@ -192,16 +231,17 @@ _aap_demo_vault_ensure_file() {
 
 aap_demo_vault_get() {
   local key="$1"
+  _aap_demo_vault_require_tools || return 1
   _aap_demo_vault_migrate_legacy || return 1
   [ -s "$AAP_DEMO_VAULT_FILE" ] || return 1
   [ -s "$AAP_DEMO_VAULT_PASSWORD_FILE" ] || return 1
   _aap_demo_private_mode "$AAP_DEMO_VAULT_FILE"
   _aap_demo_private_mode "$AAP_DEMO_VAULT_PASSWORD_FILE"
 
-  ansible-vault view \
+  "$AAP_DEMO_ANSIBLE_VAULT" view \
     --vault-password-file "$AAP_DEMO_VAULT_PASSWORD_FILE" \
     "$AAP_DEMO_VAULT_FILE" 2>/dev/null |
-    AAP_DEMO_SECRET_KEY="$key" python3 -c '
+    AAP_DEMO_SECRET_KEY="$key" "$AAP_DEMO_VAULT_PYTHON" -c '
 import os
 import sys
 import yaml
@@ -217,6 +257,38 @@ sys.stdout.write(value)
 '
 }
 
+aap_demo_vault_import_file() {
+  local key="$1" path="$2" value
+  [ -s "$path" ] || return 1
+  value=$(cat "$path") || return 1
+  [ -n "$value" ] || return 1
+  aap_demo_vault_set "$key" "$value" || return 1
+  rm -f "$path"
+}
+
+aap_demo_pull_secret_get() {
+  local path value key="aap_demo.redhat.pull_secret"
+  value=$(aap_demo_vault_get "$key" 2>/dev/null || true)
+  if [ -n "$value" ]; then
+    printf '%s' "$value"
+    return 0
+  fi
+  for path in "$HOME/.aap-demo/pull-secret" "$HOME/.aap-demo/pull-secret.txt" \
+    "$HOME/.aap-demo/pull-secret.json"; do
+    [ -s "$path" ] || continue
+    aap_demo_vault_import_file "$key" "$path" || return 1
+    aap_demo_vault_get "$key"
+    return
+  done
+  if [ -n "${PULL_SECRET_PATH:-}" ] && [ -s "$PULL_SECRET_PATH" ]; then
+    value=$(cat "$PULL_SECRET_PATH") || return 1
+    aap_demo_vault_set "$key" "$value" || return 1
+    printf '%s' "$value"
+    return 0
+  fi
+  return 1
+}
+
 aap_demo_vault_set() {
   local key="$1"
   local value="$2"
@@ -228,7 +300,7 @@ aap_demo_vault_set() {
   encrypted=$(mktemp "${vault_dir}/.env-aap-demo.vault.XXXXXX")
   chmod 600 "$plain" "$encrypted"
 
-  if ! ansible-vault view \
+  if ! "$AAP_DEMO_ANSIBLE_VAULT" view \
     --vault-password-file "$AAP_DEMO_VAULT_PASSWORD_FILE" \
     "$AAP_DEMO_VAULT_FILE" >"$plain"; then
     rm -f "$plain" "$encrypted"
@@ -236,7 +308,7 @@ aap_demo_vault_set() {
     return 1
   fi
 
-  if ! AAP_DEMO_SECRET_KEY="$key" python3 - "$plain" 3< <(printf '%s' "$value") <<'PY'
+  if ! AAP_DEMO_SECRET_KEY="$key" "$AAP_DEMO_VAULT_PYTHON" - "$plain" 3< <(printf '%s' "$value") <<'PY'
 import os
 import sys
 import yaml
@@ -264,7 +336,7 @@ PY
     return 1
   fi
 
-  if ! ansible-vault encrypt \
+  if ! "$AAP_DEMO_ANSIBLE_VAULT" encrypt \
     --vault-password-file "$AAP_DEMO_VAULT_PASSWORD_FILE" \
     --output "$encrypted" "$plain" >/dev/null; then
     rm -f "$plain" "$encrypted"
@@ -280,6 +352,7 @@ aap_demo_vault_delete() {
   local key="$1"
   [ -s "$AAP_DEMO_VAULT_FILE" ] || return 0
   [ -s "$AAP_DEMO_VAULT_PASSWORD_FILE" ] || return 1
+  _aap_demo_vault_require_tools || return 1
 
   local vault_dir plain encrypted
   vault_dir=$(dirname "$AAP_DEMO_VAULT_FILE")
@@ -287,7 +360,7 @@ aap_demo_vault_delete() {
   encrypted=$(mktemp "${vault_dir}/.env-aap-demo.vault.XXXXXX")
   chmod 600 "$plain" "$encrypted"
 
-  if ! ansible-vault view \
+  if ! "$AAP_DEMO_ANSIBLE_VAULT" view \
     --vault-password-file "$AAP_DEMO_VAULT_PASSWORD_FILE" \
     "$AAP_DEMO_VAULT_FILE" >"$plain"; then
     rm -f "$plain" "$encrypted"
@@ -295,7 +368,7 @@ aap_demo_vault_delete() {
     return 1
   fi
 
-  AAP_DEMO_SECRET_KEY="$key" python3 - "$plain" <<'PY'
+  if ! AAP_DEMO_SECRET_KEY="$key" "$AAP_DEMO_VAULT_PYTHON" - "$plain" <<'PY'
 import os
 import sys
 import yaml
@@ -315,8 +388,13 @@ else:
 with open(path, "w", encoding="utf-8") as stream:
     yaml.safe_dump(data, stream, default_flow_style=False, sort_keys=True)
 PY
+  then
+    rm -f "$plain" "$encrypted"
+    _err "Unable to update encrypted credentials"
+    return 1
+  fi
 
-  if ! ansible-vault encrypt \
+  if ! "$AAP_DEMO_ANSIBLE_VAULT" encrypt \
     --vault-password-file "$AAP_DEMO_VAULT_PASSWORD_FILE" \
     --output "$encrypted" "$plain" >/dev/null; then
     rm -f "$plain" "$encrypted"

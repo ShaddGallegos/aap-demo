@@ -25,6 +25,7 @@ _aap_demo() {
     'service:Manage shutdown backups and boot restore'
     'clean:Remove AAP deployment (keeps cluster)'
     'maintenance:Clean safe VM data or fully uninstall aap-demo'
+    'credentials:Manage encrypted credentials and token keepalive'
     'watch:Watch AAP deployment status'
     'redeploy:Clean and redeploy AAP'
     'redhat-status:Check Red Hat registry status'

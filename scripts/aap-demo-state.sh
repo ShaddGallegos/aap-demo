@@ -137,6 +137,8 @@ state_save() (
   trap 'rm -rf -- "$stage"' EXIT
   final="$STATE_ROOT/state-$(date -u +%Y%m%dT%H%M%S%N)-${stage##*.}"
   mkdir -p "$stage/home/.crc" "$stage/home/.aap-demo" "$stage/home/.ansible/conf" "$stage/disks" || return 1
+  chown "$STATE_USER:" "$stage/home/.ansible/conf" || return 1
+  chmod 700 "$stage/home/.ansible/conf" || return 1
   echo "Saving stopped demo state to $final ..."
   state_copy "$STATE_HOME/.crc/" "$stage/home/.crc/" || return 1
   state_copy "$STATE_HOME/.aap-demo/" "$stage/home/.aap-demo/" || return 1
@@ -246,6 +248,8 @@ state_restore() {
     state_user mkdir -p "$STATE_HOME/.ansible/conf" || return 1
   fi
   state_copy "$latest/home/.ansible/conf/" "$STATE_HOME/.ansible/conf/" || return 1
+  chown "$STATE_USER:" "$STATE_HOME/.ansible/conf" || return 1
+  chmod 700 "$STATE_HOME/.ansible/conf" || return 1
   if [ -f "$latest/nvram-path" ]; then
     nvram=$(cat "$latest/nvram-path")
     case "$nvram" in

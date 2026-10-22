@@ -85,12 +85,16 @@ See [scripts/README.md](../scripts/README.md) for Linux-only details.
 
 ### macOS / Linux
 
-#### Download your pull secret from [console.redhat.com](https://console.redhat.com/openshift/install/pull-secret) and save it
+#### Download your pull secret from [console.redhat.com](https://console.redhat.com/openshift/install/pull-secret)
 
 ```bash
 mkdir -p ~/.aap-demo
 cp ~/Downloads/pull-secret.txt ~/.aap-demo/pull-secret.txt
 ```
+
+The next create/deploy imports this file into encrypted
+`~/.ansible/conf/env.yml` and removes the managed plaintext copy. Delete the
+original download after successful import.
 
 #### Install
 
@@ -270,14 +274,19 @@ aap-demo update              # Pull latest code and reinstall
 aap-demo help                # Full command reference
 ```
 
-`aap-demo create --full-demo` is a noninteractive, fail-fast demo bootstrap.
-It creates a cluster sized for the included addons, deploys AAP 2.7, enables
-Ollama and Automation Orchestrator, enables Fleet, creates and registers three
-RHEL 9 nodes, reapplies integration wiring, and launches the dashboard. Fleet
-image download and AAP subscription attachment require configured Red Hat
-credentials. Run `aap-demo fleet auth` once before the full demo. Reruns reuse
-existing Fleet nodes instead of creating duplicates. Use `--no-open` to run
-the dashboard without opening a browser.
+`aap-demo create --full-demo` is a fail-fast demo bootstrap.
+It creates a cluster sized for the included addons, deploys AAP 2.7, configures
+Automation Hub, enables the offline-token keepalive, enables Ollama and
+Automation Orchestrator, then enables Fleet, attaches the AAP subscription, and
+reconciles three started and registered RHEL 9 nodes. Product Demos is installed
+after licensing succeeds. A final strict `aap-demo wire` runs after all
+components are present, then the dashboard launches. Fleet image download
+and AAP subscription attachment require configured Red Hat credentials. Run
+`aap-demo fleet auth` once before the full demo. If the Automation Hub token is
+not configured, setup-pah prompts for that distinct token. Customer Portal and
+Automation Hub tokens remain separate in encrypted storage. Reruns reuse
+existing Fleet nodes instead of creating duplicates. Use `--no-open` to run the
+dashboard without opening a browser.
 
 `aap-demo dashboard` now starts in the background and returns after its localhost
 listener is ready. Repeating it reuses this checkout's running dashboard.
@@ -295,7 +304,7 @@ journals older than seven days and reports the VM disk space reclaimed.
 `maintenance uninstall --apply` requires typing `UNINSTALL` and removes the CRC
 cluster, Fleet VMs and images, CRC downloads, generated credentials and caches,
 temporary swap, ingress trust entries, MCP/shell integration, CLI symlink, and
-completions. It preserves the source repository and Red Hat pull secret. For
+completions. It preserves the source repository and encrypted credential Vault. For
 noninteractive use, also set `AAP_DEMO_UNINSTALL_CONFIRM=UNINSTALL`.
 
 Retained passwords and tokens are stored under the `aap_demo` namespace in
@@ -305,6 +314,22 @@ updates and migration. The directory is mode `0700`; both files are mode
 `0600`, and the password is generated automatically when absent. Co-locating
 the encrypted Vault and password protects against accidental
 publication, not compromise of the local user account.
+
+Offline tokens can expire after 30 days without use. The optional keepalive
+reads configured Customer Portal and Automation Hub tokens directly from the
+encrypted Vault once daily, exchanges them for short-lived access tokens, and
+discards the results without logging secrets:
+
+```bash
+aap-demo credentials keepalive enable
+aap-demo credentials keepalive status
+aap-demo credentials keepalive run
+aap-demo credentials keepalive disable
+```
+
+Linux uses a persistent systemd user timer so a missed run executes after wake
+or boot. macOS uses a LaunchAgent. Invalid tokens can generate desktop
+notifications; temporary network failures wait for the next scheduled retry.
 
 ## Architecture
 

@@ -84,7 +84,8 @@ function renderSummary(inventory) {
     `${cluster.name || "Local cluster"} · Kubernetes ${cluster.kubernetes_version} · ${inventory.host.architecture}`;
   elements.environmentOs.textContent =
     `Host OS: ${inventory.host.os || "Unknown"}` +
-    (cluster.vm?.guest_os ? ` · CRC guest OS: ${cluster.vm.guest_os}` : "");
+    (cluster.vm?.guest_os ? ` · CRC guest OS: ${cluster.vm.guest_os}` : "") +
+    (inventory.host.aap_subscription ? ` · AAP subscription: ${inventory.host.aap_subscription}` : "");
 
   const healthyNamespaces = inventory.namespaces.filter((namespace) => namespace.ready).length;
   const readyPods = inventory.pods.filter(
