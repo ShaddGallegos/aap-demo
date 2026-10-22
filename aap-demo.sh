@@ -10,7 +10,7 @@
 #   ./aap-demo.sh clean               # Remove AAP deployment
 #   ./aap-demo.sh destroy             # Delete entire cluster
 #   ./aap-demo.sh stop                # Stop OpenShift Local cluster
-#   ./aap-demo.sh start               # Start stopped cluster
+#   ./aap-demo.sh start               # Resume the configured demo and wait for readiness
 #   ./aap-demo.sh repair              # Repair after crash
 #   ./aap-demo.sh setup               # Setup only (no deploy)
 #   ./aap-demo.sh create              # Create cluster only
@@ -68,6 +68,12 @@ source "${SCRIPT_DIR}/includes/system-inventory.sh"
 source "${SCRIPT_DIR}/includes/system-info-document.sh"
 # shellcheck source=includes/maintenance.sh
 source "${SCRIPT_DIR}/includes/maintenance.sh"
+# shellcheck source=includes/demo-start.sh
+source "${SCRIPT_DIR}/includes/demo-start.sh"
+# shellcheck source=includes/crc-storage.sh
+source "${SCRIPT_DIR}/includes/crc-storage.sh"
+# shellcheck source=includes/state-service.sh
+source "${SCRIPT_DIR}/includes/state-service.sh"
 
 # KUBECONFIG is set later by setup_kubeconfig() after argument parsing
 
@@ -130,6 +136,10 @@ FULL_DEMO=false
 SHOW_SECRETS=false
 
 for arg in "$@"; do
+  if [ "$COMMAND" = service ]; then
+    EXTRA_ARGS+=("$arg")
+    continue
+  fi
   # Handle pending flag value
   if [ -n "$PENDING_FLAG" ]; then
     case "$PENDING_FLAG" in
@@ -216,7 +226,7 @@ for arg in "$@"; do
         exit 1
       fi
       ;;
-    deploy | deploy-all | repair | clean | maintenance | stop | setup | create | watch | update | config | redeploy | redeploy-all | redhat-status | rh-status | kubeconfig | ssh | idle | preflight | diagnose | must-gather | enable | disable | wire | system-info | dashboard | version | help | --help | -h | --version | -V)
+    deploy | deploy-all | repair | clean | maintenance | stop | restart | service | setup | create | watch | update | config | redeploy | redeploy-all | redhat-status | rh-status | kubeconfig | ssh | idle | preflight | diagnose | must-gather | enable | disable | wire | system-info | dashboard | version | help | --help | -h | --version | -V)
       case "$arg" in
         --version | -V) COMMAND="version" ;;
         *) COMMAND="$arg" ;;
@@ -542,7 +552,9 @@ Common commands:
   disable <addon>           Disable an addon
   wire                      Reapply addon integrations
   fleet <subcommand>        Manage local RHEL Fleet VMs
-  stop | start              Stop or start the cluster and preserved Fleet VMs
+  stop | start              Stop or resume the configured demo and Fleet VMs
+  restart                   Save and restart the demo (with service installed)
+  service install [--keep N] Enable Linux boot or macOS login recovery
   redeploy-all              Destroy and rebuild the configured environment
 
 Examples:
@@ -591,7 +603,7 @@ CORE COMMANDS:
     system-info                     Refresh the private Markdown environment report
     system-info [--redact] [--json] [--output FILE]
                                     Export redacted, JSON, or custom-path inventory
-    dashboard [--no-open]           Run the localhost add-on management dashboard
+    dashboard [--no-open]           Start the localhost dashboard in the background
     watch                           Watch AAP deployment progress
     clean                           Remove AAP while keeping the cluster
     maintenance [--apply]           Preview or remove safe-to-delete VM data
@@ -616,7 +628,16 @@ CLUSTER COMMANDS:
     destroy [--reset] [--skip-cache]
                                     Delete the cluster and optionally config/cache
     stop                            Stop Fleet VMs and the cluster
-    start                           Start cluster and preserved Fleet VMs
+    start                           Resume AAP, enabled addons and Fleet; wait for readiness
+    restart                         Restart demo; save/restore state when service-managed
+    service install [--keep N]      Install Linux shutdown/boot or macOS checkpoint/login recovery
+      --force-stop                 Linux only: force CRC off after graceful-stop failure
+      --stop-timeout SECONDS        Additional wait before forced stop (default: 120)
+    service retention N            Keep N completed states (default: 1)
+    service backups                List completed backups
+    service backup                 Save current state and resume the demo
+    service status                 Show platform recovery service status
+    service disable                Save state, stop demo, and disable boot restore
     repair                          Repair cluster state after a crash
     setup                           Configure storage, DNS, and local certificate trust
     ssh                             Open a shell on the cluster node
@@ -658,6 +679,7 @@ FLEET COMMANDS:
 ENVIRONMENT AND OVERRIDES:
     NAMESPACE=name                  AAP namespace (default: aap-operator)
     QUIET=true                      Disable interactive prompts where supported
+    AAP_START_TIMEOUT=seconds       Readiness timeout per start phase (default: 600)
     FORCE=true                      Force supported reinstall operations
     CRC_DISK=GiB                    CRC VM disk; minimum preserves 100 GiB for images
     CRC_PV_SIZE=GiB                 LVMS PV area; adaptive default stays below CRC_DISK
@@ -680,9 +702,9 @@ ENVIRONMENT AND OVERRIDES:
     AAP_DEMO_UNINSTALL_CONFIRM=UNINSTALL
                         Required with QUIET=true for maintenance uninstall --apply
 
-    CRC disk settings apply only when the VM is created. Existing VMs are
-    never resized or rebuilt automatically; applying a larger value requires
-    an explicitly requested destructive rebuild.
+    At 90% filesystem usage, start grows the existing CRC disk by 20% using a
+    brief stop/start. Data and PV reservations are preserved; no rebuild occurs.
+    This check runs during start, not as a continuous background monitor.
 
 EXAMPLES:
     aap-demo deploy
@@ -2206,7 +2228,7 @@ cmd_system_info() {
 
 cmd_dashboard() {
   local dashboard_script="${SCRIPT_DIR}/dashboard/server.py"
-  local args=(--repo-root "$SCRIPT_DIR")
+  local args=(--repo-root "$SCRIPT_DIR" --background)
   if [ ! -f "$dashboard_script" ]; then
     echo "ERROR: Dashboard server not found: $dashboard_script" >&2
     return 1
@@ -2214,7 +2236,7 @@ cmd_dashboard() {
   if [ "$DASHBOARD_NO_OPEN" = true ]; then
     args+=(--no-open)
   fi
-  exec python3 "$dashboard_script" "${args[@]}"
+  python3 "$dashboard_script" "${args[@]}"
 }
 
 cmd_redeploy() {
@@ -2376,36 +2398,49 @@ cmd_stop() {
 
 cmd_start() {
   local crc_create_script="${AAP_DEMO_CRC_CREATE_SCRIPT:-${SCRIPT_DIR}/includes/crc-create.sh}"
+  local addons tool
+  local AAP_START_TIMEOUT="${AAP_START_TIMEOUT:-600}"
+  if ! [[ "$AAP_START_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+    _err "AAP_START_TIMEOUT must be a positive number of seconds"
+    return 1
+  fi
+  for tool in kubectl jq curl; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      _err "Required tool not found: $tool"
+      return 1
+    fi
+  done
+  addons=$(_addons_list) || return 1
   echo ""
-  printf "\033[1maap-demo start\033[0m - Starting CRC cluster...\n"
+  printf "\033[1maap-demo start\033[0m - Resuming the configured demo...\n"
   _start_crc_cluster || return 1
   setup_kubeconfig
+  aap_demo_start_storage || return 1
+  aap_demo_start_wait "Kubernetes API" aap_demo_start_api_ready || return 1
+  kubectl wait --for=condition=Ready nodes --all --timeout="${AAP_START_TIMEOUT}s" || return 1
 
   # Re-apply CoreDNS config (fixes DNS after restarts)
   if [ -f "$crc_create_script" ]; then
-    if ! bash -c "
-      AAP_DEMO_CONFIGURE_COREDNS_ONLY=1
-      source '${crc_create_script}'
+    if ! AAP_DEMO_CONFIGURE_COREDNS_ONLY=1 bash -c '
+      source "$1"
       configure_coredns
-    "; then
+    ' bash "$crc_create_script"; then
       _err "Failed to restore CoreDNS after cluster start"
       return 1
     fi
+  else
+    _err "CoreDNS recovery script not found: $crc_create_script"
+    return 1
   fi
 
   _recover_aap_catalog_after_start || return 1
+  aap_demo_resume_demo "$addons" || return 1
 
-  if echo "$(_addons_list)" | grep -qw fleet \
-    && [ -d "${HOME}/.aap-demo/fleet" ] \
-    && [ -f "${SCRIPT_DIR}/addons/fleet/fleet.sh" ]; then
-    source "${SCRIPT_DIR}/addons/fleet/fleet.sh"
-    echo "Starting preserved Fleet nodes..."
-    fleet_start_all || return 1
-  fi
-
-  echo "✓ CRC cluster started"
+  echo "✓ Demo ready"
   echo ""
-  echo "Run 'aap-demo status' to check cluster health"
+  cmd_status
+  echo ""
+  printf 'For kubectl in this terminal: export KUBECONFIG="%s"\n' "$KUBECONFIG"
 }
 
 _recover_aap_catalog_after_start() {
@@ -3685,16 +3720,42 @@ case "$COMMAND" in
     ;;
 esac
 
+# Delegate before taking the CLI lock: the recovery runner owns a lock across stop,
+# disk backup/restore and start, and its child CLI processes share that lock.
+case "$COMMAND" in
+  start | restart | stop)
+    if aap_demo_service_managed; then
+      aap_demo_service_lifecycle "$COMMAND"
+      exit $?
+    fi
+    ;;
+esac
+
+if aap_demo_service_managed; then
+  case "$COMMAND" in
+    create | destroy | redeploy-all)
+      _err "Disable automatic state restore before rebuilding or deleting the demo: aap-demo service disable"
+      exit 1
+      ;;
+    maintenance)
+      if [ "${EXTRA_ARGS[0]:-}" = uninstall ] && [ "$MAINTENANCE_APPLY" = true ]; then
+        _err "Disable the state service before uninstalling: aap-demo service disable"
+        exit 1
+      fi
+      ;;
+  esac
+fi
+
 if aap_demo_command_requires_lock "$COMMAND"; then
   aap_demo_acquire_operation_lock "$COMMAND" || exit 1
 fi
 
 # Setup KUBECONFIG based on infrastructure type (skip for help/config commands)
 case "$COMMAND" in
-  help | --help | -h | config | update | version | "" | destroy | status | system-info | dashboard)
+  help | --help | -h | config | update | version | "" | destroy | status | system-info | dashboard | service)
     # These commands don't need cluster access
     ;;
-  redeploy-all | deploy | deploy-all | redeploy | create | start | preflight)
+  redeploy-all | deploy | deploy-all | redeploy | create | start | restart | preflight)
     # These handle their own cluster state (auto-start if stopped)
     setup_kubeconfig
     ;;
@@ -3741,6 +3802,13 @@ case "$COMMAND" in
     ;;
   start)
     cmd_start
+    ;;
+  restart)
+    cmd_stop
+    cmd_start
+    ;;
+  service)
+    cmd_service "${EXTRA_ARGS[@]}"
     ;;
   create)
     if [ "$FULL_DEMO" = true ]; then

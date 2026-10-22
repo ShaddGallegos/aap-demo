@@ -6,10 +6,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import queue
 import re
 import secrets
 import subprocess
+import sys
 import threading
 import time
 import webbrowser
@@ -18,7 +20,9 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.error import URLError
 from urllib.parse import urlparse
+from urllib.request import ProxyHandler, build_opener
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -132,9 +136,11 @@ class DashboardApp:
         self.port = port
         self.origin = f"http://{HOST}:{port}"
         self.session_token = secrets.token_urlsafe(32)
+        self.instance_id = secrets.token_hex(12)
         self.catalog = load_catalog(repo_root)
         self.addons = {addon["id"]: addon for addon in self.catalog["addons"]}
         self.operation = OperationState()
+        self.restart_requested = False
         self.cli = repo_root / "aap-demo.sh"
         self.static_dir = repo_root / "dashboard" / "static"
 
@@ -169,6 +175,9 @@ class DashboardApp:
 
     def status_payload(self) -> dict[str, Any]:
         inventory = self.inventory()
+        host = inventory.setdefault("host", {})
+        if not host.get("os") or host["os"] == "unknown":
+            host["os"] = f"{platform.system()} {platform.release()}"
         enabled = set(inventory.get("addons", []))
         addons = []
         for definition in self.catalog["addons"]:
@@ -201,6 +210,8 @@ class DashboardApp:
 
     def start_operation(self, addon_id: str, action: str) -> dict[str, Any]:
         with self.operation.lock:
+            if self.restart_requested:
+                raise RuntimeError("The dashboard is restarting")
             if self.operation.status == "running":
                 raise RuntimeError("Another dashboard operation is already running")
             operation_id = secrets.token_hex(8)
@@ -219,6 +230,14 @@ class DashboardApp:
         )
         thread.start()
         return self.operation.snapshot()
+
+    def request_restart(self) -> None:
+        with self.operation.lock:
+            if self.operation.status == "running":
+                raise RuntimeError("Wait for the current add-on operation before restarting the dashboard")
+            if self.restart_requested:
+                raise RuntimeError("The dashboard is already restarting")
+            self.restart_requested = True
 
     def _execute_operation(self, operation_id: str, addon_id: str, action: str) -> None:
         process: subprocess.Popen[str] | None = None
@@ -359,6 +378,13 @@ def create_handler(app: DashboardApp) -> type[BaseHTTPRequestHandler]:
                 self.file_response(app.static_dir / "app.js", "text/javascript; charset=utf-8")
             elif path == "/api/session":
                 self.json_response(HTTPStatus.OK, {"token": app.session_token})
+            elif path == "/api/health":
+                self.json_response(HTTPStatus.OK, {
+                    "service": "aap-demo-dashboard",
+                    "repo_root": str(app.repo_root),
+                    "pid": os.getpid(),
+                    "instance": app.instance_id,
+                })
             elif path == "/api/status":
                 try:
                     self.json_response(HTTPStatus.OK, app.status_payload())
@@ -389,13 +415,26 @@ def create_handler(app: DashboardApp) -> type[BaseHTTPRequestHandler]:
             except ValueError:
                 self.json_response(HTTPStatus.BAD_REQUEST, {"error": "Invalid content length"})
                 return
-            if content_length > MAX_BODY_BYTES:
+            if content_length < 0 or content_length > MAX_BODY_BYTES:
                 self.json_response(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "Request is too large"})
                 return
             try:
                 body = json.loads(self.rfile.read(content_length) or b"{}")
             except json.JSONDecodeError:
                 self.json_response(HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON"})
+                return
+            if not isinstance(body, dict):
+                self.json_response(HTTPStatus.BAD_REQUEST, {"error": "Expected a JSON object"})
+                return
+
+            if urlparse(self.path).path == "/api/restart":
+                try:
+                    app.request_restart()
+                except RuntimeError as error:
+                    self.json_response(HTTPStatus.CONFLICT, {"error": str(error)})
+                    return
+                self.json_response(HTTPStatus.ACCEPTED, {"status": "restarting"})
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
                 return
 
             match = re.fullmatch(r"/api/addons/([a-z0-9-]+)/(enable|disable)", urlparse(self.path).path)
@@ -449,12 +488,84 @@ def parse_args() -> argparse.Namespace:
         default=int(os.environ.get("AAP_DEMO_DASHBOARD_PORT", DEFAULT_PORT)),
     )
     parser.add_argument("--no-open", action="store_true")
+    parser.add_argument("--background", action="store_true", help="Start detached and return once ready")
     return parser.parse_args()
+
+
+def dashboard_health(port: int) -> dict[str, Any] | None:
+    opener = build_opener(ProxyHandler({}))
+    try:
+        with opener.open(f"http://{HOST}:{port}/api/health", timeout=1) as response:
+            payload = json.load(response)
+    except (URLError, ConnectionError, TimeoutError):
+        return None
+    except (ValueError, OSError) as error:
+        raise RuntimeError(f"Cannot identify the service on port {port}: {error}") from error
+    if not isinstance(payload, dict) or payload.get("service") != "aap-demo-dashboard":
+        raise RuntimeError(f"Port {port} is occupied by another service")
+    return payload
+
+
+def launch_background(repo_root: Path, port: int, open_browser: bool) -> int:
+    url = f"http://{HOST}:{port}"
+    health = dashboard_health(port)
+    log_path = Path(os.environ.get("AAP_DEMO_DIR", Path.home() / ".aap-demo")) / "dashboard.log"
+    if health is not None:
+        if health.get("repo_root") != str(repo_root):
+            raise RuntimeError(f"Another checkout's dashboard is already using {url}")
+        print(f"aap-demo dashboard already running: {url} (PID {health['pid']})")
+    else:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        flags = (
+            {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+            if os.name == "nt" else {"start_new_session": True}
+        )
+        command = [
+            sys.executable, "-u", str(Path(__file__).resolve()),
+            "--repo-root", str(repo_root), "--port", str(port), "--no-open",
+        ]
+        with log_path.open("ab") as log:
+            os.chmod(log_path, 0o600)
+            process = subprocess.Popen(
+                command, cwd=repo_root, stdin=subprocess.DEVNULL,
+                stdout=log, stderr=subprocess.STDOUT, **flags,
+            )
+        deadline = time.monotonic() + 10
+        try:
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    raise RuntimeError(f"Dashboard exited with code {process.returncode}; see {log_path}")
+                health = dashboard_health(port)
+                if health and health.get("pid") == process.pid and health.get("repo_root") == str(repo_root):
+                    break
+                time.sleep(0.1)
+            else:
+                raise RuntimeError(f"Dashboard did not become ready on {url}; see {log_path}")
+        except (RuntimeError, OSError):
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+            raise
+        print(f"aap-demo dashboard running in background: {url} (PID {process.pid})")
+    print(f"Dashboard log: {log_path}")
+    if open_browser:
+        webbrowser.open(url)
+    return 0
 
 
 def main() -> int:
     args = parse_args()
+    if not 1 <= args.port <= 65535:
+        print("ERROR: Dashboard port must be between 1 and 65535", file=sys.stderr)
+        return 1
     repo_root = args.repo_root.resolve()
+    open_browser = not args.no_open and os.environ.get("AAP_DEMO_DASHBOARD_NO_OPEN") != "true"
+    if args.background:
+        try:
+            return launch_background(repo_root, args.port, open_browser)
+        except (RuntimeError, OSError) as error:
+            print(f"ERROR: {error}", file=sys.stderr)
+            return 1
     app = DashboardApp(repo_root, args.port)
     try:
         server = ThreadingHTTPServer((HOST, args.port), create_handler(app))
@@ -464,7 +575,7 @@ def main() -> int:
     url = app.origin
     print(f"aap-demo dashboard: {url}")
     print("Localhost only. Press Ctrl+C to stop.")
-    if not args.no_open and os.environ.get("AAP_DEMO_DASHBOARD_NO_OPEN") != "true":
+    if open_browser:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()
     try:
         server.serve_forever()
@@ -472,6 +583,12 @@ def main() -> int:
         print("\nStopping dashboard...")
     finally:
         server.server_close()
+    if app.restart_requested:
+        print("Restarting dashboard...", flush=True)
+        os.execv(sys.executable, [
+            sys.executable, "-u", str(Path(__file__).resolve()),
+            "--repo-root", str(repo_root), "--port", str(args.port), "--no-open",
+        ])
     return 0
 
 

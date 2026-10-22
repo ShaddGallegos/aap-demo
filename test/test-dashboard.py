@@ -5,7 +5,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
+import signal
+import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -15,6 +19,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SERVER_PATH = REPO_ROOT / "dashboard" / "server.py"
@@ -52,7 +57,8 @@ def fixture_inventory() -> dict[str, Any]:
                 "total_containers": 1,
             },
         ],
-        "cluster": {"state": "running"},
+        "host": {"os": "Fedora Linux 44", "architecture": "x86_64"},
+        "cluster": {"state": "running", "vm": {"guest_os": "Red Hat Enterprise Linux 9.6"}},
         "storage": {
             "capacity_planning": {
                 "actual_vm_disk_gib": 140,
@@ -154,7 +160,37 @@ class DashboardUnitTests(unittest.TestCase):
         self.assertIn('id="capacity-panel"', markup)
         self.assertIn('role="status"', markup)
         self.assertIn("Configured CRC disk", script)
+        self.assertIn("At 90% disk usage, aap-demo start adds 20% capacity", script)
+        self.assertIn("This planning estimate is not a resize trigger.", script)
+        self.assertNotIn("requires a destructive rebuild", script)
+        self.assertNotIn("setting applies only to a newly created VM", script)
         self.assertIn("Projected recommendation", script)
+        self.assertIn('id="environment-os"', markup)
+        self.assertIn('id="restart-button"', markup)
+        self.assertIn("Host OS:", script)
+        self.assertIn("CRC guest OS:", script)
+        self.assertIn('api("/api/restart"', script)
+
+    def test_host_os_falls_back_for_non_linux_inventory(self) -> None:
+        app = dashboard.DashboardApp(REPO_ROOT, 0)
+        inventory = fixture_inventory()
+        inventory["host"]["os"] = "unknown"
+        with patch.object(app, "inventory", return_value=inventory), \
+                patch.object(dashboard.platform, "system", return_value="Darwin"), \
+                patch.object(dashboard.platform, "release", return_value="25.0"):
+            self.assertEqual(app.status_payload()["inventory"]["host"]["os"], "Darwin 25.0")
+
+    def test_restart_and_addon_operations_cannot_overlap(self) -> None:
+        app = dashboard.DashboardApp(REPO_ROOT, 0)
+        app.operation.status = "running"
+        with self.assertRaisesRegex(RuntimeError, "current add-on operation"):
+            app.request_restart()
+        app.operation.status = "idle"
+        app.request_restart()
+        with self.assertRaisesRegex(RuntimeError, "already restarting"):
+            app.request_restart()
+        with self.assertRaisesRegex(RuntimeError, "restarting"):
+            app.start_operation("portal", "enable")
 
 
 class DashboardHttpTests(unittest.TestCase):
@@ -289,6 +325,128 @@ class DashboardHttpTests(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=3) as response:
             self.assertEqual(response.headers["X-Frame-Options"], "DENY")
             self.assertIn("frame-ancestors 'none'", response.headers["Content-Security-Policy"])
+
+    def test_restart_requires_origin_and_session(self) -> None:
+        for token, origin in ((None, None), ("invalid", self.app.origin),
+                              (self.app.session_token, "http://attacker.invalid")):
+            status, _ = self.request("/api/restart", method="POST", token=token, origin=origin)
+            self.assertEqual(status, 403)
+
+    def test_restart_is_accepted_without_touching_cluster(self) -> None:
+        with patch.object(self.app, "request_restart") as restart, \
+                patch.object(self.server, "shutdown") as shutdown, \
+                patch.object(self.app, "run_cli") as run_cli:
+            status, payload = self.request(
+                "/api/restart", method="POST",
+                token=self.app.session_token, origin=self.app.origin,
+            )
+            self.assertEqual(status, 202)
+            self.assertEqual(payload["status"], "restarting")
+            restart.assert_called_once()
+            deadline = time.monotonic() + 1
+            while not shutdown.called and time.monotonic() < deadline:
+                time.sleep(0.01)
+            shutdown.assert_called_once()
+            run_cli.assert_not_called()
+
+    def test_busy_restart_is_rejected(self) -> None:
+        with patch.object(self.app, "request_restart", side_effect=RuntimeError("Operation running")):
+            status, _ = self.request(
+                "/api/restart", method="POST",
+                token=self.app.session_token, origin=self.app.origin,
+            )
+        self.assertEqual(status, 409)
+
+    def test_health_is_independent_of_cluster(self) -> None:
+        with patch.object(self.app, "inventory", side_effect=RuntimeError("CRC stopped")):
+            status, payload = self.request("/api/health")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["service"], "aap-demo-dashboard")
+        self.assertEqual(payload["repo_root"], str(REPO_ROOT))
+        self.assertNotIn(self.app.session_token, json.dumps(payload))
+
+
+class DashboardBackgroundTests(unittest.TestCase):
+    def test_background_return_reuse_and_real_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with socket.socket() as listener:
+                listener.bind((dashboard.HOST, 0))
+                port = listener.getsockname()[1]
+            command = [
+                sys.executable, str(SERVER_PATH), "--background", "--no-open",
+                "--repo-root", str(REPO_ROOT), "--port", str(port),
+            ]
+            environment = os.environ.copy()
+            environment["AAP_DEMO_DIR"] = temp_dir
+            pid = None
+            try:
+                started = time.monotonic()
+                result = subprocess.run(command, env=environment, capture_output=True,
+                                        text=True, timeout=15, check=False)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertLess(time.monotonic() - started, 12)
+                self.assertIn("running in background", result.stdout)
+                health = dashboard.dashboard_health(port)
+                self.assertIsNotNone(health)
+                pid = health["pid"]
+                self.assertNotEqual(pid, os.getpid())
+                if os.name != "nt":
+                    self.assertEqual(os.getsid(pid), pid)
+                self.assertTrue((Path(temp_dir) / "dashboard.log").is_file())
+                reused = subprocess.run(command, env=environment, capture_output=True,
+                                        text=True, timeout=15, check=False)
+                self.assertEqual(reused.returncode, 0, reused.stderr)
+                self.assertIn("already running", reused.stdout)
+                self.assertEqual(dashboard.dashboard_health(port)["pid"], pid)
+                base_url = f"http://{dashboard.HOST}:{port}"
+                with urllib.request.urlopen(base_url + "/api/session", timeout=3) as response:
+                    token = json.load(response)["token"]
+                request = urllib.request.Request(
+                    base_url + "/api/restart", data=b"{}", method="POST",
+                    headers={"Content-Type": "application/json", "Origin": base_url,
+                             "X-AAP-Demo-Token": token},
+                )
+                with urllib.request.urlopen(request, timeout=3) as response:
+                    self.assertEqual(response.status, 202)
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    new_health = dashboard.dashboard_health(port)
+                    if new_health and new_health["instance"] != health["instance"]:
+                        break
+                    time.sleep(0.1)
+                else:
+                    self.fail("Background dashboard did not restart")
+                self.assertEqual(new_health["pid"], pid)
+                with urllib.request.urlopen(base_url + "/api/session", timeout=3) as response:
+                    self.assertNotEqual(json.load(response)["token"], token)
+            finally:
+                if pid is None:
+                    health = dashboard.dashboard_health(port)
+                    pid = health["pid"] if health else None
+                if pid is not None:
+                    os.kill(pid, signal.SIGTERM)
+                    deadline = time.monotonic() + 5
+                    while time.monotonic() < deadline and dashboard.dashboard_health(port):
+                        time.sleep(0.1)
+
+    def test_background_refuses_other_checkout(self) -> None:
+        with patch.object(dashboard, "dashboard_health", return_value={
+            "service": "aap-demo-dashboard", "repo_root": "/different/checkout", "pid": 1,
+        }), patch.object(dashboard.subprocess, "Popen") as spawn:
+            with self.assertRaisesRegex(RuntimeError, "Another checkout"):
+                dashboard.launch_background(REPO_ROOT, 8765, False)
+            spawn.assert_not_called()
+
+    def test_background_child_failure_is_not_reported_as_success(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, \
+                patch.dict(os.environ, {"AAP_DEMO_DIR": temp_dir}), \
+                patch.object(dashboard, "dashboard_health", return_value=None), \
+                patch.object(dashboard.subprocess, "Popen") as spawn:
+            spawn.return_value.poll.return_value = 1
+            spawn.return_value.returncode = 1
+            with self.assertRaisesRegex(RuntimeError, "Dashboard exited with code 1"):
+                dashboard.launch_background(REPO_ROOT, 8765, False)
+            spawn.return_value.terminate.assert_not_called()
 
 
 if __name__ == "__main__":

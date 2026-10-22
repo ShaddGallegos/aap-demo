@@ -45,14 +45,14 @@ aap_demo_active_pods_ready() {
   [ -z "$selector" ] || args+=(-l "$selector")
 
   kubectl get pods "${args[@]}" 2>/dev/null | jq -e '
-    [.items[]
+    ([.items[]
       | select(.status.phase != "Succeeded")
       | select(
           .status.phase == "Running"
           and any(.status.conditions[]?; .type == "Ready" and .status == "True")
         )
-    ] | length
+    ] | length)
     ==
-    [.items[] | select(.status.phase != "Succeeded")] | length
+    ([.items[] | select(.status.phase != "Succeeded")] | length)
   ' >/dev/null
 }

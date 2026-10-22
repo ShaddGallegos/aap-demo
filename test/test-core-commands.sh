@@ -102,7 +102,14 @@ esac
 EOF
 chmod +x "$SCRIPT_DIR/mocks/crc"
 
-if output=$(QUIET=true "$AAP_DEMO_SH" stop 2>&1); then
+_test_stop() (
+  eval "$(sed -n '/^cmd_stop()/,/^}$/p' "$AAP_DEMO_SH")"
+  HOME="${SCRIPT_DIR}/mocks/home"
+  _err() { echo "ERROR: $*" >&2; }
+  cmd_stop
+)
+
+if output=$(_test_stop 2>&1); then
   if echo "$output" | grep -q "MOCK: crc stop"; then
     _pass "stop_calls_crc"
   else
@@ -113,8 +120,30 @@ else
 fi
 
 # Test 4: start command - verify it calls crc start
+# Isolate the start orchestration so lifecycle tests cannot resume the real demo.
+_test_start() (
+  eval "$(sed -n '/^cmd_start()/,/^}$/p' "$AAP_DEMO_SH")"
+  SCRIPT_DIR="${SCRIPT_DIR}/.."
+  KUBECONFIG="${SCRIPT_DIR}/test/mocks/kubeconfig"
+  AAP_DEMO_CRC_CREATE_SCRIPT="${AAP_DEMO_CRC_CREATE_SCRIPT:-${SCRIPT_DIR}/test/mocks/start-coredns.sh}"
+  _addons_list() { :; }
+  _start_crc_cluster() {
+    crc start || { _err "Failed to start the CRC cluster"; return 1; }
+  }
+  _err() { echo "ERROR: $*" >&2; }
+  setup_kubeconfig() { :; }
+  aap_demo_start_storage() { :; }
+  aap_demo_start_wait() { :; }
+  kubectl() { :; }
+  _recover_aap_catalog_after_start() { :; }
+  aap_demo_resume_demo() { :; }
+  cmd_status() { :; }
+  cmd_start
+)
+printf 'configure_coredns() { :; }\n' >"$SCRIPT_DIR/mocks/start-coredns.sh"
+
 echo "Test 4: start command logic"
-if output=$(QUIET=true "$AAP_DEMO_SH" start 2>&1); then
+if output=$(_test_start 2>&1); then
   if echo "$output" | grep -q "MOCK: crc start" \
     && ! echo "$output" | grep -q "WARNING: No cluster exists"; then
     _pass "start_calls_crc"
@@ -126,7 +155,7 @@ else
 fi
 
 echo "Test 4c: CRC start failure returns nonzero"
-if output=$(CRC_START_RC=42 QUIET=true "$AAP_DEMO_SH" start 2>&1); then
+if output=$(CRC_START_RC=42 _test_start 2>&1); then
   _fail "crc_start_failure_returns_nonzero"
 elif echo "$output" | grep -q 'Failed to start the CRC cluster'; then
   _pass "crc_start_failure_returns_nonzero"
@@ -135,7 +164,7 @@ else
 fi
 
 echo "Test 4d: CRC stop failure returns nonzero"
-if output=$(CRC_STOP_RC=42 QUIET=true "$AAP_DEMO_SH" stop 2>&1); then
+if output=$(CRC_STOP_RC=42 _test_stop 2>&1); then
   _fail "crc_stop_failure_returns_nonzero"
 elif echo "$output" | grep -q 'Failed to stop the CRC cluster'; then
   _pass "crc_stop_failure_returns_nonzero"
@@ -153,7 +182,7 @@ chmod +x "$SCRIPT_DIR/mocks/failing-crc-create.sh"
 
 echo "Test 4e: CoreDNS recovery failure returns nonzero"
 if output=$(AAP_DEMO_CRC_CREATE_SCRIPT="$SCRIPT_DIR/mocks/failing-crc-create.sh" \
-  QUIET=true "$AAP_DEMO_SH" start 2>&1); then
+  _test_start 2>&1); then
   _fail "coredns_recovery_failure_returns_nonzero"
 elif echo "$output" | grep -q 'Failed to restore CoreDNS after cluster start'; then
   _pass "coredns_recovery_failure_returns_nonzero"

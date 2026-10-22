@@ -3,6 +3,78 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ORIGINAL_PATH="$PATH"
+export PATH="$HOME/.local/bin:$PATH"
+
+case "$(uname -s)" in
+  Linux | Darwin) ;;
+  *)
+    echo "ERROR: Use powershell/install.ps1 on Windows; see Windows_Quickstart.md."
+    exit 1
+    ;;
+esac
+
+install_oc() (
+  local platform arch archive tmp expected actual
+  case "$(uname -s):$(uname -m)" in
+    Darwin:arm64 | Darwin:aarch64) platform=mac-arm64 ;;
+    Darwin:x86_64) platform=mac ;;
+    Linux:x86_64) platform=linux ;;
+    Linux:aarch64 | Linux:arm64) platform=linux-arm64 ;;
+    *) echo "ERROR: No oc download configured for $(uname -sm)" >&2; exit 1 ;;
+  esac
+  archive="openshift-client-${platform}.tar.gz"
+  tmp=$(mktemp -d)
+  trap 'rm -rf -- "$tmp"' EXIT
+  curl -fsSL "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/$archive" \
+    -o "$tmp/$archive" || exit 1
+  curl -fsSL "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/sha256sum.txt" \
+    -o "$tmp/checksums" || exit 1
+  expected=$(awk -v file="$archive" '$2 == file || $2 == "*" file {print $1}' "$tmp/checksums")
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual=$(sha256sum "$tmp/$archive" | awk '{print $1}')
+  else
+    actual=$(shasum -a 256 "$tmp/$archive" | awk '{print $1}')
+  fi
+  if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+    echo "ERROR: Cannot verify the OpenShift client archive checksum" >&2
+    exit 1
+  fi
+  tar -xzf "$tmp/$archive" -C "$tmp" || exit 1
+  mkdir -p "$HOME/.local/bin" || exit 1
+  for client in oc kubectl; do
+    install -m 755 "$tmp/$client" "$HOME/.local/bin/$client" || exit 1
+    if [ "$(uname -s)" = Darwin ]; then
+      xattr -d com.apple.quarantine "$HOME/.local/bin/$client" 2>/dev/null || true
+    fi
+  done
+)
+
+install_kubectl() (
+  local version arch tmp expected actual
+  version=$(curl -fsSL https://dl.k8s.io/release/stable.txt) || exit 1
+  [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+    echo "ERROR: Invalid Kubernetes release version" >&2; exit 1;
+  }
+  case "$(uname -m)" in
+    x86_64) arch=amd64 ;;
+    aarch64 | arm64) arch=arm64 ;;
+    *) echo "ERROR: Unsupported kubectl architecture: $(uname -m)" >&2; exit 1 ;;
+  esac
+  tmp=$(mktemp -d) || exit 1
+  trap 'rm -rf -- "$tmp"' EXIT
+  curl -fsSL "https://dl.k8s.io/release/$version/bin/linux/$arch/kubectl" \
+    -o "$tmp/kubectl" || exit 1
+  expected=$(curl -fsSL "https://dl.k8s.io/release/$version/bin/linux/$arch/kubectl.sha256") || exit 1
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual=$(sha256sum "$tmp/kubectl" | awk '{print $1}') || exit 1
+  else
+    actual=$(shasum -a 256 "$tmp/kubectl" | awk '{print $1}') || exit 1
+  fi
+  [ "$expected" = "$actual" ] || { echo "ERROR: kubectl checksum mismatch" >&2; exit 1; }
+  mkdir -p "$HOME/.local/bin" || exit 1
+  install -m 755 "$tmp/kubectl" "$HOME/.local/bin/kubectl"
+)
 
 # Uninstall
 if [ "${1:-}" = "--uninstall" ] || [ "${1:-}" = "uninstall" ]; then
@@ -18,8 +90,8 @@ if [ "${1:-}" = "--uninstall" ] || [ "${1:-}" = "uninstall" ]; then
     echo "  ✓ Enabled addon state removed from ${config_file}"
   fi
   echo ""
-  echo "  VM data at ~/.aap-demo/vm/ was NOT removed."
-  echo "  To remove everything: rm -rf ~/.aap-demo/vm/"
+  echo "  CRC data at ~/.crc/ and demo data at ~/.aap-demo/ were NOT removed."
+  echo "  Use 'aap-demo maintenance uninstall' before removing the launcher for full removal."
   exit 0
 fi
 
@@ -71,84 +143,7 @@ if [ -n "$MISSING_DEPS" ]; then
     echo "Installing via Homebrew and OpenShift mirror..."
     for dep in $MISSING_DEPS; do
       case "$dep" in
-        oc)
-          echo "Installing oc client..."
-          # Detect architecture
-          ARCH=$(uname -m)
-          case "$ARCH" in
-            arm64 | aarch64)
-              OC_URL="https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-mac-arm64.tar.gz"
-              ;;
-            x86_64 | amd64)
-              OC_URL="https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-mac.tar.gz"
-              ;;
-            *)
-              echo "ERROR: Unsupported architecture: $ARCH"
-              echo "Supported: arm64, x86_64"
-              exit 1
-              ;;
-          esac
-
-          # Download and extract to temporary location
-          TMP_DIR=$(mktemp -d)
-          trap 'rm -rf "$TMP_DIR"' EXIT
-
-          echo "  Downloading from OpenShift mirror..."
-          if ! curl -fsSL "$OC_URL" -o "$TMP_DIR/oc.tar.gz"; then
-            echo "ERROR: Failed to download oc from $OC_URL"
-            exit 1
-          fi
-
-          # Verify checksum if available
-          if curl -fsSL "${OC_URL}.sha256" -o "$TMP_DIR/oc.sha256" 2>/dev/null; then
-            echo "  Verifying checksum..."
-            EXPECTED=$(cat "$TMP_DIR/oc.sha256" | awk '{print $1}')
-            ACTUAL=$(shasum -a 256 "$TMP_DIR/oc.tar.gz" | awk '{print $1}')
-            if [[ "$EXPECTED" != "$ACTUAL" ]]; then
-              echo "ERROR: Checksum mismatch"
-              echo "  Expected: $EXPECTED"
-              echo "  Actual:   $ACTUAL"
-              exit 1
-            fi
-          fi
-
-          if ! tar -xzf "$TMP_DIR/oc.tar.gz" -C "$TMP_DIR"; then
-            echo "ERROR: Failed to extract oc archive"
-            exit 1
-          fi
-
-          if [ ! -f "$TMP_DIR/oc" ]; then
-            echo "ERROR: oc binary not found in archive"
-            exit 1
-          fi
-
-          # Install to ~/.local/bin
-          mkdir -p ~/.local/bin
-          mv "$TMP_DIR/oc" ~/.local/bin/oc
-          chmod +x ~/.local/bin/oc
-          # The OpenShift mirror's archive can inherit macOS quarantine metadata.
-          # Clear it only after the archive has passed checksum verification so
-          # Gatekeeper does not block the freshly installed client.
-          if command -v xattr &>/dev/null; then
-            xattr -d com.apple.quarantine ~/.local/bin/oc 2>/dev/null || true
-          fi
-          echo "✓ oc installed to ~/.local/bin/oc"
-
-          # Install kubectl if present in archive
-          if [ -f "$TMP_DIR/kubectl" ]; then
-            mv "$TMP_DIR/kubectl" ~/.local/bin/kubectl
-            chmod +x ~/.local/bin/kubectl
-            if command -v xattr &>/dev/null; then
-              xattr -d com.apple.quarantine ~/.local/bin/kubectl 2>/dev/null || true
-            fi
-            echo "✓ kubectl installed to ~/.local/bin/kubectl"
-          fi
-
-          # Warn if ~/.local/bin not in PATH
-          if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
-            echo "⚠  Add ~/.local/bin to PATH: export PATH=\"\$HOME/.local/bin:\$PATH\""
-          fi
-          ;;
+        oc) install_oc ;;
         kubectl)
           # Skip if already installed via oc
           if command -v kubectl &>/dev/null; then
@@ -173,15 +168,10 @@ if [ -n "$MISSING_DEPS" ]; then
     echo "Installing missing dependencies..."
     for dep in $MISSING_DEPS; do
       case "$dep" in
+        oc) install_oc ;;
         kubectl)
-          echo "Installing kubectl..."
-          KUBECTL_VERSION=$(curl -L -s https://dl.k8s.io/release/stable.txt)
-          KUBECTL_ARCH=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
-          curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${KUBECTL_ARCH}/kubectl"
-          chmod +x kubectl
-          mkdir -p ~/.local/bin
-          mv kubectl ~/.local/bin/
-          echo "✓ kubectl installed to ~/.local/bin/kubectl"
+          command -v kubectl >/dev/null 2>&1 && continue
+          install_kubectl
           ;;
         ansible | jq | python3)
           # Try package manager
@@ -213,6 +203,12 @@ if [ -n "$MISSING_DEPS" ]; then
   echo ""
 fi
 
+for tool in oc kubectl ansible-playbook jq python3; do
+  command -v "$tool" >/dev/null 2>&1 || {
+    echo "ERROR: Required tool is still missing after installation: $tool" >&2
+    exit 1
+  }
+done
 echo "  ✓ All required dependencies found"
 echo ""
 
@@ -224,7 +220,7 @@ ln -sf "${SCRIPT_DIR}/aap-demo.sh" ~/.local/bin/aap-demo
 echo "  Symlink: ~/.local/bin/aap-demo -> ${SCRIPT_DIR}/aap-demo.sh"
 
 # Detect OS and install completions
-SHELL_NAME=$(basename "$SHELL")
+SHELL_NAME=$(basename "${SHELL:-/bin/bash}")
 
 if [ "$(uname)" = "Darwin" ]; then
   # macOS: install both zsh (default) and bash completions
@@ -262,7 +258,7 @@ else
 fi
 
 # Check PATH
-if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+if [[ ":$ORIGINAL_PATH:" != *":$HOME/.local/bin:"* ]]; then
   echo ""
   echo "NOTE: ~/.local/bin is not in your PATH. Add it with:"
   echo "  echo 'export PATH=\$HOME/.local/bin:\$PATH' >> ~/.${SHELL_NAME}rc"

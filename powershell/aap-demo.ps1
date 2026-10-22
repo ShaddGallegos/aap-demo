@@ -156,7 +156,16 @@ if ($Arguments.Count -gt 1) {
 
 $cli = Get-AapParsedCliArgs -Rest $rest
 
+$lockedCommands = @('repair', 'clean', 'maintenance', 'destroy', 'stop', 'start', 'restart', 'create', 'setup', 'update', 'config', 'redeploy', 'redeploy-all', 'kubeconfig', 'idle', 'enable', 'disable', 'deploy', 'deploy-all', 'setup-pah')
+
+# login-start takes the lock itself so lock failures are recorded in last-login.json.
+
+$unlockedServiceCommands = @('status', 'backups', 'verify', 'login-start')
+
+$lockToken = $null
+
 try {
+
   if ($cli.FullDemo -and $command -ne 'create') {
     throw '--full-demo is supported only by create'
   }
@@ -165,6 +174,20 @@ try {
   }
   if ($cli.ShowSecrets -and [Console]::IsOutputRedirected) {
     throw '--show-secrets requires an interactive terminal'
+  }
+
+  if ($command -in @('create', 'destroy', 'redeploy-all')) {
+
+    Assert-AapStateNotManaged -Operation $command
+
+  }
+
+  $serviceSub = if ($cli.Positional.Count -gt 0) { $cli.Positional[0] } else { 'status' }
+
+  if ($command -in $lockedCommands -or ($command -eq 'service' -and $serviceSub -notin $unlockedServiceCommands)) {
+
+    $lockToken = Enter-AapOperationLock -Command $command
+
   }
 
   switch ($command) {
@@ -216,7 +239,23 @@ try {
 
     }
 
-    'stop' { Invoke-AapDemoStop }
+    'start' { Invoke-AapDemoStartCommand }
+
+    'restart' { Invoke-AapDemoRestart }
+
+    'stop' { Invoke-AapDemoStopCommand }
+
+    'service' {
+
+      $serviceArgs = @($cli.Positional)
+
+      if ($cli.Apply) { $serviceArgs += '--apply' }
+
+      if ($cli.Force) { $serviceArgs += '--force' }
+
+      Invoke-AapDemoService -Arguments $serviceArgs
+
+    }
 
     'destroy' { Invoke-AapDemoDestroy -Reset:$cli.Reset }
 
@@ -335,6 +374,14 @@ try {
 
   Write-Host "  ERROR $($_.Exception.Message)" -ForegroundColor Red
 
+  Exit-AapOperationLock -Token $lockToken
+
+  $lockToken = $null
+
   exit 1
+
+} finally {
+
+  Exit-AapOperationLock -Token $lockToken
 
 }

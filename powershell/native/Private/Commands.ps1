@@ -94,7 +94,7 @@ function Invoke-AapDemoStop {
   if (-not (Invoke-AapCrcStop)) {
     throw 'crc stop failed'
   }
-  Write-Host 'To restart: aap-demo deploy'
+  Write-Host 'To restart: aap-demo start'
 }
 
 function Invoke-AapDemoDestroy {
@@ -223,6 +223,9 @@ function Invoke-AapDemoMaintenance {
   )
 
   if ($Uninstall) {
+    if ($Apply) {
+      Assert-AapStateNotManaged -Operation 'maintenance uninstall --apply'
+    }
     Write-Host ''
     Write-Host 'aap-demo maintenance uninstall - Full environment removal preview' -ForegroundColor Cyan
     Write-Host ''
@@ -591,7 +594,7 @@ function Invoke-AapDemoMustGather {
   Write-Host "To share: tar czf must-gather.tar.gz $DestDir"
 }
 
-function Write-AapClusterSummary {
+function Invoke-AapDemoRedeploy {
   [CmdletBinding()]
   param(
     [string]$Namespace = $Script:AapDemoDefaultNamespace,

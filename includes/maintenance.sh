@@ -238,7 +238,7 @@ _maintenance_uninstall_apply() {
   rm -rf -- "$crc_dir"
   cli_path="$HOME/.local/bin/aap-demo"
   if [ -L "$cli_path" ] \
-    && [ "$(readlink -f "$cli_path")" = "$(readlink -f "${SCRIPT_DIR}/aap-demo.sh")" ]; then
+    && [ "$(readlink "$cli_path")" = "${SCRIPT_DIR}/aap-demo.sh" ]; then
     rm -f -- "$cli_path"
   fi
   rm -f -- \

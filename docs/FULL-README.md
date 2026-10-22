@@ -279,6 +279,15 @@ credentials. Run `aap-demo fleet auth` once before the full demo. Reruns reuse
 existing Fleet nodes instead of creating duplicates. Use `--no-open` to run
 the dashboard without opening a browser.
 
+`aap-demo dashboard` now starts in the background and returns after its localhost
+listener is ready. Repeating it reuses this checkout's running dashboard.
+Logs are written to `~/.aap-demo/dashboard.log` (or `$AAP_DEMO_DIR/dashboard.log`).
+The Environment Overview shows the host OS and, when available, CRC guest OS.
+Use the small **Restart dashboard** button to restart only the dashboard and
+reconnect the page; it is blocked during dashboard add-on operations and does
+not restart CRC, AAP or Fleet. For foreground debugging, use
+`python3 dashboard/server.py --no-open` from the repository root.
+
 `maintenance --apply` keeps running containers, images used by workloads,
 namespaces, PVCs, and the optional local image cache. It also vacuums system
 journals older than seven days and reports the VM disk space reclaimed.

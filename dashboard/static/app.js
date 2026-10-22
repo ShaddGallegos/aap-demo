@@ -7,6 +7,7 @@ const state = {
   polling: null,
   dismissedOperationId: null,
   dismissTimer: null,
+  restarting: false,
 };
 
 const elements = {
@@ -20,6 +21,7 @@ const elements = {
   clusterIndicator: document.querySelector("#cluster-indicator"),
   clusterState: document.querySelector("#cluster-state"),
   clusterSummary: document.querySelector("#cluster-summary"),
+  environmentOs: document.querySelector("#environment-os"),
   lastUpdated: document.querySelector("#last-updated"),
   namespaceList: document.querySelector("#namespace-list"),
   operationDetails: document.querySelector("#operation-details"),
@@ -29,6 +31,7 @@ const elements = {
   operationPanel: document.querySelector("#operation-panel"),
   operationStatus: document.querySelector("#operation-status"),
   refreshButton: document.querySelector("#refresh-button"),
+  restartButton: document.querySelector("#restart-button"),
   routesList: document.querySelector("#routes-list"),
   summaryGrid: document.querySelector("#summary-grid"),
 };
@@ -79,6 +82,9 @@ function renderSummary(inventory) {
   elements.clusterState.textContent = running ? "Cluster running" : `Cluster ${cluster.state}`;
   elements.clusterSummary.textContent =
     `${cluster.name || "Local cluster"} · Kubernetes ${cluster.kubernetes_version} · ${inventory.host.architecture}`;
+  elements.environmentOs.textContent =
+    `Host OS: ${inventory.host.os || "Unknown"}` +
+    (cluster.vm?.guest_os ? ` · CRC guest OS: ${cluster.vm.guest_os}` : "");
 
   const healthyNamespaces = inventory.namespaces.filter((namespace) => namespace.ready).length;
   const readyPods = inventory.pods.filter(
@@ -127,11 +133,11 @@ function renderCapacity(inventory) {
   if (undersized) {
     elements.capacityMessage.textContent =
       `This VM is below the ${capacity.recommended_vm_disk_gib} GiB planning recommendation for the enabled add-ons. ` +
-      "CRC disk size is fixed at VM creation; applying a larger setting requires a destructive rebuild, which aap-demo never performs automatically.";
+      "This planning estimate is not a resize trigger. At 90% disk usage, aap-demo start adds 20% capacity after checking host space and gracefully stopping CRC; no destructive rebuild is required.";
   } else if (pendingConfig) {
     elements.capacityMessage.textContent =
       `Configured CRC disk (${capacity.configured_crc_disk_gib} GiB) does not match the existing VM. ` +
-      "The setting applies only to a newly created VM; no resize or rebuild will be performed automatically.";
+      "A supported disk-size increase takes effect on the next stopped-VM CRC start. Separately, aap-demo start checks for 90% disk usage and adds 20% capacity when needed; it never rebuilds the VM automatically.";
   } else {
     elements.capacityMessage.textContent =
       "Conservative planning estimates include safety headroom and are not exact product requirements. Host-only storage is separate from the CRC VM.";
@@ -245,6 +251,7 @@ function renderNamespaces(namespaces) {
 }
 
 function renderOperation(operation) {
+  elements.restartButton.disabled = state.restarting || operation?.status === "running";
   if (
     !operation ||
     operation.status === "idle" ||
@@ -293,6 +300,9 @@ function render(payload) {
 }
 
 async function refresh() {
+  if (state.restarting) {
+    return;
+  }
   elements.refreshButton.disabled = true;
   try {
     const payload = await api("/api/status");
@@ -306,6 +316,9 @@ async function refresh() {
 }
 
 async function toggleAddon(addonId, action) {
+  if (state.restarting) {
+    return;
+  }
   if (action === "disable") {
     const confirmed = window.confirm(
       `Disable ${addonId}? Workloads will be removed, but retained data and credentials will be preserved where supported.`,
@@ -329,6 +342,41 @@ async function toggleAddon(addonId, action) {
     startOperationPolling();
   } catch (error) {
     showAlert(error.message);
+  }
+}
+
+async function restartDashboard() {
+  if (state.restarting) {
+    return;
+  }
+  state.restarting = true;
+  elements.restartButton.disabled = true;
+  elements.restartButton.textContent = "Restarting...";
+  elements.refreshButton.disabled = true;
+  showAlert("Restarting the dashboard only. CRC and AAP will keep running.");
+  try {
+    const previous = await api("/api/health");
+    await api("/api/restart", {method: "POST", body: "{}"});
+    const deadline = Date.now() + 30000;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
+      try {
+        const health = await api("/api/health", {signal: AbortSignal.timeout(2000)});
+        if (health.instance !== previous.instance) {
+          window.location.reload();
+          return;
+        }
+      } catch {
+        // The listener is briefly unavailable while the server replaces itself.
+      }
+    }
+    throw new Error("Dashboard restart timed out. Check dashboard.log or run 'aap-demo dashboard --no-open'.");
+  } catch (error) {
+    showAlert(error.message);
+    state.restarting = false;
+    elements.restartButton.disabled = state.payload?.operation?.status === "running";
+    elements.restartButton.textContent = "Restart dashboard";
+    elements.refreshButton.disabled = false;
   }
 }
 
@@ -370,6 +418,7 @@ async function initialize() {
 }
 
 elements.refreshButton.addEventListener("click", refresh);
+elements.restartButton.addEventListener("click", restartDashboard);
 elements.operationDismiss.addEventListener("click", () => {
   const operation = state.payload?.operation;
   if (operation) {

@@ -6,6 +6,34 @@ Deploy AAP to a local MicroShift cluster in minutes.
 
 **aap-demo is a LOCAL DEVELOPMENT tool and must NEVER be used in production.**
 
+## Choose your platform
+
+| Host | Installation, configuration, and daily use |
+|------|--------------------------------------------|
+| RHEL / Fedora | [Linux quickstart](Linux_Quickstart.md) |
+| macOS (Intel / Apple Silicon) | [macOS quickstart](MAC_Quickstart.md) |
+| Windows / Hyper-V | [Windows quickstart](Windows_Quickstart.md) |
+| WSL terminal, Windows-hosted CRC | [WSL quickstart](WSL_Quickstart.md) |
+
+Linux/macOS use the Bash CLI; Windows uses the native PowerShell CLI. WSL
+should invoke that Windows CLI instead of creating a second CRC installation.
+CLI portability does not make every addon image available for every architecture.
+
+| Capability | Native Linux | macOS | Native Windows / WSL wrapper |
+|------------|--------------|-------|-------------------------------|
+| CRC + AAP core lifecycle | Bash | Bash | PowerShell |
+| Fleet | QEMU/KVM | QEMU/HVF, matching guest architecture | Not native PowerShell |
+| Separate persistent image disk | libvirt | Use OCI cache instead | Not supported |
+| Shutdown backup + pre-login boot recovery | systemd/libvirt | No | No |
+| Explicit checkpoint + login recovery | systemd boot workflow | LaunchAgent, vfkit/raw | Native scheduled task, supported Hyper-V layout |
+| Addon integrations | Bash, subject to images/tools | Bash, subject to images/tools | Native subset; other addons require Git Bash/tools |
+
+Native macOS/Windows recovery is a **checkpoint-before-reboot** workflow, not
+a guaranteed shutdown backup. It must still be validated with real CRC VMs on
+those hosts; hermetic tests and CI checks are not equivalent to live recovery.
+See [state recovery](docs/state-service.md) for retention, credentials and rollback
+semantics. The Linux bootstrap below is **not** a macOS/Windows/WSL installer.
+
 ## Prerequisites
 
 - **CRC (OpenShift Local)** — [Download](https://console.redhat.com/openshift/create/local)
@@ -22,7 +50,7 @@ Deploy AAP to a local MicroShift cluster in minutes.
 Download your pull secret to `~/Downloads/pull-secret.txt`, then run:
 
 ```bash
-git clone https://github.com/RedHatOfficial/aap-demo.git
+git clone https://github.com/ShaddGallegos/aap-demo.git
 cd aap-demo
 ./scripts/local-prereq.sh --full
 ```
@@ -135,7 +163,7 @@ aap-demo create --full-demo  # Create AAP + Ollama/AO + three RHEL 9 Fleet nodes
 aap-demo status              # Show cluster status and routes; secrets stay hidden
 aap-demo status --show-secrets # Reveal credentials interactively
 aap-demo stop                # Stop the cluster
-aap-demo start               # Start the cluster
+aap-demo start               # Resume the configured demo and wait for readiness
 aap-demo ssh                 # SSH into the cluster node
 aap-demo watch               # Monitor deployment progress
 aap-demo destroy             # Delete entire cluster
@@ -169,6 +197,73 @@ image download and AAP subscription attachment require configured Red Hat
 credentials. Run `aap-demo fleet auth` once before the full demo. Reruns reuse
 existing Fleet nodes instead of creating duplicates. Use `--no-open` to run
 the dashboard without opening a browser.
+
+### Dashboard
+
+`aap-demo dashboard` starts the localhost dashboard **in the background** and
+returns to your terminal after its HTTP listener is ready. It opens your browser
+unless you pass `--no-open`. Running the command again reuses the dashboard for
+this checkout rather than starting a duplicate.
+
+The Environment Overview shows the host OS and, when available, the CRC guest OS.
+The small **Restart dashboard** button reloads the dashboard server and reconnects
+the page without restarting CRC, AAP or Fleet. Restart is blocked during an active
+dashboard add-on operation.
+
+The default address is `http://127.0.0.1:8765`; set `AAP_DEMO_DASHBOARD_PORT`
+to choose another port. Logs go to `~/.aap-demo/dashboard.log` (or
+`$AAP_DEMO_DIR/dashboard.log`). For foreground debugging, run
+`python3 dashboard/server.py --no-open`. Background mode does not install a
+boot/login service.
+
+### Resuming the demo
+
+Run `aap-demo start` after stopping CRC, rebooting the host, or idling AAP. It:
+
+1. Starts CRC and checks its filesystem usage. At **90% or higher**, it grows the
+   existing VM disk by **20%**, rounded up to whole GiB, using a brief CRC
+   stop/start. CRC expands the guest filesystem while preserving data and the PV
+   reservation. Host free space is checked before resizing; no rebuild, forced
+   shutdown, or deletion is performed.
+2. Waits for the Kubernetes API and node readiness, restores CoreDNS routing, and
+   recovers the AAP operator catalog.
+3. Waits for installed networking, ingress, storage and OLM workloads; refreshes
+   ingress CA trust using the existing local-development trust settings.
+4. Resumes idle AAP through its custom resource, waits for workloads and operator
+   reconciliation, and checks the gateway API.
+5. Waits for enabled addons, starts preserved Fleet VMs, reapplies integrations,
+   and checks workloads again before displaying status and the kubeconfig export.
+
+Healthy application pods are not forcibly restarted. Disabled addons are not
+enabled, missing deployments are not silently reinstalled, and failures return
+nonzero with diagnostic guidance instead of reporting a ready demo.
+
+The readiness timeout is **600 seconds per phase**, adjustable with
+`AAP_START_TIMEOUT=900 aap-demo start`. Catalog recovery retains its separate
+`AAP_START_CATALOG_TIMEOUT` setting. Disk checks run **during startup**, not in a
+background monitoring service; there is no fixed 100 GiB free-space requirement.
+They cover CRC's `/var` filesystem, not individual PVCs or a separately attached
+persistent image-store disk. Interrupted disk growth retains its target for a
+safe retry instead of repeatedly adding 20%.
+
+### Automatic boot recovery
+
+On Linux with CRC/libvirt, optionally install a system service that saves the
+demo on graceful shutdown and restores the last completed backup on boot:
+
+```bash
+aap-demo service install             # Retain only the latest completed state
+aap-demo service install --force-stop --stop-timeout 120  # Linux: opt in to crash-consistent CRC fallback
+aap-demo service retention 3         # Optionally keep three states instead
+aap-demo restart                     # Save, restore, and start the demo
+```
+
+This uses full cold backups of CRC/Fleet disks, configuration and required
+keys/credentials. It briefly stops the demo for each backup and requires host
+disk space. While enabled, `start`, `restart` and `stop` route through systemd.
+Starting restores the saved state and brings the demo fully online; newer local
+state can be replaced. See [shutdown backup and boot restore](docs/state-service.md)
+for retention, security, recovery and disabling instructions.
 
 `maintenance --apply` keeps running containers, images used by workloads,
 namespaces, PVCs, and the optional local image cache. It also vacuums system

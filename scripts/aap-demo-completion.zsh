@@ -20,6 +20,9 @@ _aap_demo() {
     'deploy:Deploy AAP (operator + CR)'
     'deploy-all:Deploy AAP (alias for deploy)'
     'status:Show cluster and AAP status'
+    'start:Resume demo or restore the latest service-managed backup'
+    'restart:Save state and restart the demo'
+    'service:Manage shutdown backups and boot restore'
     'clean:Remove AAP deployment (keeps cluster)'
     'maintenance:Clean safe VM data or fully uninstall aap-demo'
     'watch:Watch AAP deployment status'
@@ -43,6 +46,10 @@ _aap_demo() {
     _values 'maintenance action' \
       'uninstall[Preview full environment removal]' \
       '--apply[Apply the selected maintenance action]'
+    return
+  fi
+  if [[ "${words[2]}" == "service" ]]; then
+    _values 'service action' install retention status backups backup disable --keep --force-stop --stop-timeout
     return
   fi
 

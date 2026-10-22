@@ -60,7 +60,7 @@ MOCK_DISK_VALUES="50 45 5"
 warning=$(aap_demo_capacity_warn_enable ao "" 2>&1)
 grep -q 'Disk capacity planning warning' <<<"$warning"
 grep -q 'Continuing without resize' <<<"$warning"
-grep -q 'destructive rebuild' <<<"$warning"
+grep -q '20% disk growth' <<<"$warning"
 
 MOCK_DISK_VALUES="200 100 100"
 warning=$(aap_demo_capacity_warn_enable ao "" 2>&1)

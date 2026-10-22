@@ -9,6 +9,45 @@ on:
   workflow_dispatch:
 
 jobs:
+  macos-portability:
+    name: macOS Bash and checkpoint tests
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test prerequisites
+        run: brew install jq rsync shellcheck
+      - name: Validate macOS scripts without a live CRC VM
+        shell: bash
+        run: |
+          /bin/bash test/test-install.sh
+          /bin/bash test/test-crc-storage.sh
+          /bin/bash test/test-start.sh
+          /bin/bash test/test-macos-state.sh
+          shellcheck --severity=warning install.sh includes/state-service.sh scripts/aap-demo-macos-state.sh
+
+  windows-portability:
+    name: Windows PowerShell syntax and isolated tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse PowerShell sources with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $failed = $false
+          Get-ChildItem powershell,test -Recurse -Include *.ps1,*.psm1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) { $errors | Write-Output; $failed = $true }
+          }
+          if ($failed) { exit 1 }
+      - name: Run isolated Windows platform tests
+        shell: powershell
+        run: .\test\test-windows-platform.ps1
+      - name: Run isolated PowerShell 7 platform tests
+        shell: pwsh
+        run: .\test\test-windows-platform.ps1
+
   syntax-check:
     name: Shell Syntax Check
     runs-on: ubuntu-latest
@@ -35,6 +74,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Install cold-state test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq qemu-utils rsync libxml2-utils
 
       - name: Run all non-live unit tests
         run: ./test/run-unit-tests.sh

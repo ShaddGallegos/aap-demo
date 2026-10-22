@@ -176,7 +176,7 @@ aap_demo_capacity_warn_enable() {
     printf '  Enabling %s projects a %s GiB CRC VM recommendation; this VM is %s GiB with %s GiB free.\n' \
       "$addon" "$recommended" "$actual" "$free" >&2
     printf '  Estimates are conservative planning guidance, not exact requirements.\n' >&2
-    printf '  Continuing without resize. CRC disk size only applies when the VM is created;\n' >&2
-    printf '  changing it for an existing VM requires a destructive rebuild that aap-demo will never trigger automatically.\n\n' >&2
+    printf '  Continuing without resize. During aap-demo start, filesystem usage of 90%% or more\n' >&2
+    printf '  triggers 20%% disk growth through a brief CRC stop/start, without a rebuild.\n\n' >&2
   fi
 }

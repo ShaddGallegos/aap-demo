@@ -7,7 +7,7 @@ _aap_demo() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD - 1]}"
 
-  commands="deploy deploy-all status clean maintenance destroy stop repair setup create watch update config redeploy redeploy-all redhat-status rh-status kubeconfig help"
+  commands="deploy deploy-all status clean maintenance destroy start restart stop service repair setup create watch update config redeploy redeploy-all redhat-status rh-status kubeconfig help"
   options="--infra --kubeconfig --context --ansible --apply --full-demo --no-open --show-secrets"
   infra_types="minc vm lab"
 
@@ -28,6 +28,10 @@ _aap_demo() {
 
   if [ "${COMP_WORDS[1]:-}" = "maintenance" ] && [ "$COMP_CWORD" -eq 2 ]; then
     COMPREPLY=($(compgen -W "uninstall --apply" -- "$cur"))
+    return 0
+  fi
+  if [ "${COMP_WORDS[1]:-}" = "service" ]; then
+    COMPREPLY=($(compgen -W "install --keep --force-stop --stop-timeout retention status backups backup disable" -- "$cur"))
     return 0
   fi
 

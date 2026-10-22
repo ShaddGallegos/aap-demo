@@ -158,8 +158,10 @@ USAGE:
     aap-demo <command> [options]
 
 CLUSTER:
-    stop            Stop cluster
-    start           Start stopped cluster
+    start           Start cluster, resume idle AAP, wait for core + addon readiness
+                    (grows the CRC disk by 20% when guest /var is >= 90% used)
+    stop            Stop cluster (managed: also saves a cold checkpoint)
+    restart         Stop then start (managed: checkpoint, restore, start)
     destroy         Deletes cluster (--reset clears saved preset)
     repair          Show repair instructions
     ssh             SSH into VM
@@ -186,6 +188,15 @@ STATUS:
     idle            Scale AAP down/up (true|false)
     redhat-status   Check Red Hat registry status (alias: rh-status)
     must-gather     Collect diagnostic bundle
+
+STATE SERVICE (Hyper-V cold checkpoints, restored at Windows logon):
+    service install [--keep N]
+                    Register current-user logon task; keep N checkpoints (default 1)
+    service backup  Stop CRC gracefully and save a verified cold checkpoint
+    service restore [NAME]
+                    Restore a checkpoint into the stopped VM (no start)
+    service status  Show task, checkpoints, last logon result
+    service backups / verify [NAME] / retention N / disable
 
 ADDONS:
     enable portal   Enable Self-Service Portal (Helm; auto-detects arm64 vs amd64)

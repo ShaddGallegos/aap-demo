@@ -6,6 +6,10 @@ $PrivateDir = Join-Path $PSScriptRoot 'Private'
 
 . (Join-Path $PrivateDir 'Helpers.ps1')
 
+. (Join-Path $PrivateDir 'OperationLock.ps1')
+
+. (Join-Path $PrivateDir 'Start.ps1')
+
 . (Join-Path $PrivateDir 'Create.ps1')
 
 . (Join-Path $PrivateDir 'Deploy.ps1')
@@ -21,6 +25,8 @@ $PrivateDir = Join-Path $PSScriptRoot 'Private'
 . (Join-Path $PrivateDir 'Addons.ps1')
 
 . (Join-Path $PrivateDir 'Commands.ps1')
+
+. (Join-Path $PrivateDir 'StateService.ps1')
 
 . (Join-Path $PrivateDir 'Collections.ps1')
 
@@ -79,5 +85,23 @@ Export-ModuleMember -Function @(
   'Show-AapDemoVersion'
 
   'Invoke-AapDemoSetupPah'
+
+  'Invoke-AapDemoStart'
+
+  'Invoke-AapDemoStartCommand'
+
+  'Invoke-AapDemoStopCommand'
+
+  'Invoke-AapDemoRestart'
+
+  'Invoke-AapDemoService'
+
+  'Enter-AapOperationLock'
+
+  'Exit-AapOperationLock'
+
+  'Test-AapStateServiceManaged'
+
+  'Assert-AapStateNotManaged'
 
 )

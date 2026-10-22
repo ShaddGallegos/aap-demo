@@ -12,6 +12,10 @@ Validation tests for `aap-demo.sh` command-line interface.
 ./test/test-core-commands.sh
 ```
 
+The cold-state regression test uses `jq`, `qemu-img`, `rsync` and `xmllint` on
+small temporary disk images; it does not stop or restore a real VM. CI installs
+`jq qemu-utils rsync libxml2-utils` on Ubuntu for these tests.
+
 ### Coverage
 
 #### Help/Usage
@@ -43,6 +47,13 @@ Validation tests for `aap-demo.sh` command-line interface.
 - ✓ `destroy`, `clean` show warnings (interactive skipped in quick mode)
 - ✓ `destroy --reset` flag parsing
 - ✓ AAP 2.7 terminal readiness across shell and PowerShell implementations
+- ✓ `start` resumes idle AAP, checks infrastructure and enabled addons, starts
+  preserved Fleet VMs, refreshes integrations, and propagates readiness failures
+- ✓ CRC startup storage policy: exact 90% threshold, 20% growth rounded up to
+  whole GiB, host capacity checks, preserved settings, and interrupted-resize retry
+- ✓ Systemd state service: cold CRC/Fleet backups with flattened backing chains,
+  configuration/credential restore, checksums, failed-backup preservation,
+  retention, boot/shutdown ordering, lifecycle routing and concurrent-operation locks
 
 ### Test Design
 
@@ -201,3 +212,26 @@ kubectl get automationorchestrator automation-orchestrator \
 kubectl get secret automation-orchestrator-initial-admin-password \
   -n automation-orchestrator
 ```
+
+## Platform portability
+
+Focused non-live checks:
+
+```bash
+bash test/test-install.sh
+bash test/test-crc-storage.sh
+bash test/test-start.sh
+bash test/test-macos-state.sh
+```
+
+The macOS checkpoint tests use temporary raw disk fixtures and real file copying
+and checksums; CRC, launchd and guest lifecycle calls are mocked. CI also runs
+them using macOS `/bin/bash` and validates the LaunchAgent plist there.
+
+Windows CI parses sources with PowerShell 5.1 and runs
+`test/test-windows-platform.ps1` with both Windows PowerShell and PowerShell 7.
+These tests are not live Hyper-V tests.
+
+Actual host VM shutdown/checkpoint/login/restore tests are still required before
+claiming native recoverability. Never run destructive recovery experiments
+against a working demo without a separately verified copy and user approval.

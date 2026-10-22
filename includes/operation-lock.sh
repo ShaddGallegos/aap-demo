@@ -8,7 +8,7 @@ _AAP_DEMO_LOCK_HELD=false
 
 aap_demo_command_requires_lock() {
   case "${1:-}" in
-    repair | clean | maintenance | destroy | stop | start | create | setup | update | config \
+    repair | clean | maintenance | destroy | stop | start | restart | create | setup | update | config \
       | redeploy | redeploy-all | kubeconfig | idle | fleet | enable | disable \
       | wire | deploy | deploy-all)
       return 0
@@ -69,7 +69,8 @@ aap_demo_acquire_operation_lock() {
     fi
 
     owner_pid=$(_aap_demo_lock_owner_value pid)
-    if [[ "$owner_pid" =~ ^[0-9]+$ ]] && kill -0 "$owner_pid" 2>/dev/null; then
+    if [[ "$owner_pid" =~ ^[0-9]+$ ]] \
+      && { kill -0 "$owner_pid" 2>/dev/null || [ -d "/proc/$owner_pid" ]; }; then
       owner_command=$(_aap_demo_lock_owner_value command)
       owner_started=$(_aap_demo_lock_owner_value started)
       echo "ERROR: Another aap-demo operation is already running." >&2

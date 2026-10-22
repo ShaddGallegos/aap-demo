@@ -83,6 +83,12 @@ p {
 
 .topbar-actions {
   gap: 18px;
+  flex-wrap: wrap;
+}
+
+.button.compact {
+  padding: 6px 10px;
+  font-size: 12px;
 }
 
 .eyebrow {

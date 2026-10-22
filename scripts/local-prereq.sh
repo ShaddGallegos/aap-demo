@@ -54,6 +54,12 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+if [[ "$(uname -s)" != Linux ]] || grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then
+  echo "ERROR: This host bootstrap requires native Linux with libvirt." >&2
+  echo "Use MAC_Quickstart.md or Windows_Quickstart.md; WSL users should follow WSL_Quickstart.md." >&2
+  exit 1
+fi
+
 export PATH="${HOME}/.local/bin:${PATH}"
 cd "$REPO_ROOT"
 

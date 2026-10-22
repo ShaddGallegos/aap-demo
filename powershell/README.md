@@ -1,7 +1,10 @@
 # aap-demo on Windows (PowerShell)
 
-Install and run [aap-demo](../README.md) on Windows using PowerShell. All commands
-run natively in PowerShell; only `diagnose --ai` uses Git Bash.
+Install and run [aap-demo](../README.md) on Windows using PowerShell. Core commands
+run natively in PowerShell. Addons without a native implementation (`setup-pah`,
+`ao`, `apme-eap`, `local-cache`) run their `addons/<name>/deploy.sh` through
+**Git for Windows Bash**. `diagnose --ai` and `create --full-demo` are not
+available natively (use the Bash/Linux CLI).
 
 ## Requirements
 
@@ -11,7 +14,7 @@ run natively in PowerShell; only `diagnose --ai` uses Git Bash.
 | **OpenShift Local (`crc`)** | [Download](https://console.redhat.com/openshift/create/local). Hyper-V enabled. |
 | **OpenShift CLI (`oc`)**    | Installed by `install.ps1` via winget when missing.                             |
 | **Red Hat pull secret**     | [Download](https://console.redhat.com/openshift/install/pull-secret)            |
-| **Git for Windows**         | Optional. Only needed for `diagnose --ai`.                                      |
+| **Git for Windows**         | Required for `git clone`/`update` and for `deploy.sh`-based addons (see below). |
 | **OpenSSH client**          | Used during `create` to configure the cluster VM (`ssh` on PATH).               |
 
 `kubectl` is **not** required on Windows — all commands use `oc` exclusively.
@@ -23,7 +26,7 @@ Optional: `python`, `jq`.
 ### 1. Clone the repository
 
 ```powershell
-git clone https://github.com/RedHatOfficial/aap-demo.git
+git clone https://github.com/ShaddGallegos/aap-demo.git
 cd aap-demo
 ```
 
@@ -80,7 +83,10 @@ All commands run in PowerShell. Run `aap-demo help` for the full list.
 | `aap-demo redeploy-all`        | Destroy cluster and full redeploy                                  |
 | `aap-demo clean`               | Remove AAP deployment                                              |
 | `aap-demo destroy`             | Delete CRC cluster (`--reset` clears saved preset)                 |
-| `aap-demo stop`                | Stop CRC cluster                                                   |
+| `aap-demo start`               | Start CRC, resume idle AAP, wait for core and addon readiness      |
+| `aap-demo stop`                | Stop CRC cluster (saves a cold checkpoint when the service is on)  |
+| `aap-demo restart`             | Stop and start (managed: checkpoint, restore, start)               |
+| `aap-demo service ...`         | Cold checkpoint and logon restore service (see below)              |
 | `aap-demo status`              | Cluster health, namespaces, routes, admin password                 |
 | `aap-demo diagnose`            | Environment health checks                                          |
 | `aap-demo watch`               | Monitor AAP deployment until Successful                            |
@@ -94,7 +100,74 @@ All commands run in PowerShell. Run `aap-demo help` for the full list.
 | `aap-demo update`              | `git pull` and reinstall launcher                                  |
 | `aap-demo help`                | Show command help                                                  |
 
-`aap-demo diagnose --ai` delegates to Git Bash for Claude-assisted analysis.
+`mcp-server` and `portal` are enabled/disabled natively; `setup-pah`, `ao`,
+`apme-eap` and `local-cache` run `addons/<name>/deploy.sh` (or `--delete`)
+with Git for Windows Bash. `aap-demo diagnose --ai` is unsupported in native PowerShell
+(it fails with an error and does not delegate to Bash); use the Bash/Linux CLI for it.
+
+### Startup storage growth
+
+`aap-demo start` (and the start phase of `restart` and logon restore) checks the CRC
+guest `/var` filesystem over SSH (`df -Pk /var`). When usage is **at least 90%** it:
+
+1. Reads the actual disk size from `%USERPROFILE%\.crc\machines\crc\config.json`
+   (`Driver.DiskCapacity`, bytes) and targets `ceil(actual * 1.2)` GiB. If that
+   value is missing or invalid, start fails explicitly and nothing is resized.
+2. Checks that the host drive holding `.crc\machines\crc` has room for the growth.
+3. Records one pending target in `~/.aap-demo/storage-growth.pending`, runs
+   `crc config set disk-size <N>` and persists `CRC_DISK=<N>` in `~/.aap-demo/config`.
+4. Stops CRC gracefully (never forced off) and starts it again.
+5. Verifies that `DiskCapacity` reached the target, the filesystem grew and usage is
+   below 90%. Only then is the pending target removed.
+
+Any failure is reported as an error and the pending target is kept, so the next
+`aap-demo start` retries the same size instead of computing a new one. No elevated
+API is used for this; growth relies on CRC applying `disk-size` on start (not
+validated on native Windows/Hyper-V by these tests).
+
+## State service (cold checkpoints)
+
+The native state service saves the full **cold** OpenShift Local state and restores it
+when you sign in to Windows. It does not run at shutdown: a checkpoint is taken only by
+`aap-demo stop`, `aap-demo restart` or `aap-demo service backup`.
+
+| Command                                | Description                                                     |
+| -------------------------------------- | --------------------------------------------------------------- |
+| `aap-demo service install [--keep N]`  | Register the current-user logon task (default keeps 1 backup)   |
+| `aap-demo service backup`              | Gracefully stop CRC and save a verified checkpoint              |
+| `aap-demo service restore [NAME]`      | Restore a checkpoint into the stopped VM (does not start it)    |
+| `aap-demo service status` / `backups`  | Show task, checkpoints and the last logon result                |
+| `aap-demo service verify [NAME]`       | Re-hash a checkpoint                                            |
+| `aap-demo service retention N`         | Change retention (any positive integer) and prune               |
+| `aap-demo service disable`             | Remove the logon task; keep checkpoints                         |
+
+What it saves (under `%LOCALAPPDATA%\aap-demo\state\backups`): the VM disk and CRC files in
+`%USERPROFILE%\.crc\machines`, `.crc\crc.json`, `%USERPROFILE%\.aap-demo` (except locks and
+logs), and `.ansible\conf\env.yml` / `.vaultpass.txt`. Every file is SHA256-verified and
+a checkpoint is only published after `COMPLETE` and a full re-hash.
+
+Constraints:
+
+- Hyper-V access without elevation: the logon task runs as you (Interactive, Limited, no
+  stored password). Your account must be in **Hyper-V Administrators** (`crc setup` adds
+  it; sign out and back in). Otherwise install refuses and the logon run fails visibly.
+- Only cold state: CRC stopped and VM `Off`. Saved, Paused or running VMs are refused; the
+  VM is never forced off. Checkpoints, differencing disks, disks outside
+  `.crc\machines\crc`, junctions and symlinks are refused as unsupported layouts.
+- **Same-VM checkpoints, not VM reconstruction backups.** Hyper-V owned files
+  (`Virtual Machines\*.vmcx`, `.vmgs`, `.vmrs`) and the CRC bundle cache are not copied.
+  A restore only puts disk/config/credential state back into the *existing* VM, and
+  requires that VM to be unchanged: the same Hyper-V VMId and VM configuration, and the
+  same CRC bundle still preserved in `.crc\cache`. A changed VMId is refused. A checkpoint
+  cannot rebuild a deleted, re-created or reconfigured VM, or a cleared bundle cache; after
+  `crc delete`/`crc cleanup` you must disable the service and run `aap-demo create`.
+- Free space: about 1.1x the VM disk for a checkpoint, and the same again while restoring.
+- An interrupted restore is rolled back from `restore-journal.json` on the next state
+  operation. If a checkpoint fails, start and logon restore are refused until
+  `aap-demo service backup` succeeds, so an older backup is never restored over newer data.
+- `create`, `destroy`, `redeploy-all` and `maintenance uninstall --apply` are refused while
+  the service is enabled. Run `aap-demo service disable` first.
+- Logon logs: `%LOCALAPPDATA%\aap-demo\state\logs`; the result is shown by `service status`.
 
 ## Environment variables
 
@@ -111,6 +184,9 @@ Set in PowerShell before running commands, or add to
 | `QUIET`             | `false`                                      | Suppress interactive prompts                       |
 | `KUBECONFIG`        | `%USERPROFILE%\.crc\machines\crc\kubeconfig` | Cluster kubeconfig                                 |
 | `AAP_DEMO_TRUST_CA` | `true` (implicit)                            | Set to `false` to skip automatic ingress CA import |
+| `AAP_START_TIMEOUT` | `600`                                        | Seconds `start` waits for AAP and addon readiness  |
+| `AAP_DEMO_DISABLE_LOCK` | `false`                                  | `true` disables the cross-command operation lock   |
+| `AAP_DEMO_BASH`     | auto (Git for Windows)                       | Explicit Git for Windows `bin\bash.exe` for addons |
 
 Example:
 
@@ -128,6 +204,7 @@ aap-demo create
 | `%USERPROFILE%\.aap-demo\pull-secret.txt`    | Red Hat pull secret                         |
 | `%USERPROFILE%\.aap-demo\crc-ingress-ca.crt` | MicroShift ingress CA (saved for TLS trust) |
 | `%USERPROFILE%\.crc\`                        | OpenShift Local VM data                     |
+| `%LOCALAPPDATA%\aap-demo\state\`              | State service config, checkpoints, logs     |
 
 ## Uninstall
 
@@ -160,16 +237,21 @@ Re-run from the repo directory:
 
 Do not move or delete the cloned repo after install — the launcher points at it.
 
-### Git Bash required for diagnose --ai
+### Git for Windows Bash required for an addon
 
-Re-run the installer (it installs Git for Windows via winget when missing), then
-open a new PowerShell window:
+`setup-pah`, `ao`, `apme-eap` and `local-cache` run their `deploy.sh` with Git
+for Windows Bash. The CLI looks for `bash.exe` in `AAP_DEMO_BASH`, next to
+`git.exe` on `PATH`, then in `%ProgramFiles%\Git`, `%ProgramFiles(x86)%\Git`
+and `%LOCALAPPDATA%\Programs\Git`. WSL's `bash.exe` (`%WINDIR%\System32`,
+`WindowsApps`) is never used. Install Git for Windows and open a new window:
 
 ```powershell
-.\powershell\install.ps1
+winget install --id Git.Git -e
+# or point at a specific install:
+$env:AAP_DEMO_BASH = 'C:\Program Files\Git\bin\bash.exe'
 ```
 
-Most commands (`create`, `deploy`, `destroy`, …) do not need Git Bash.
+Other commands (`create`, `deploy`, `destroy`, …) do not need Git Bash.
 
 ### `oc` or `crc` not found
 
@@ -282,7 +364,7 @@ Then run commands with `pwsh` instead of `powershell`.
 aap-demo (launcher in ~/.local/bin)
   └── powershell/aap-demo.ps1
         └── powershell/native/AapDemo.psm1  (all commands)
-              └── diagnose --ai  →  Git Bash (when needed)
+              └── deploy.sh addons  →  Git for Windows Bash
 ```
 
 ## Updating
