@@ -164,7 +164,7 @@ _aap_demo() {
       ;;
     fleet)
       if [ "$COMP_CWORD" -eq 2 ]; then
-        _aap_demo_complete_words "auth add register start list remove destroy"
+        _aap_demo_complete_words "auth add register rhc-connect start ssh list remove destroy"
       else
         case "$subcommand" in
           auth)

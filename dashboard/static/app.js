@@ -213,8 +213,8 @@ function renderAddons(addons) {
   });
 }
 
-function renderRoutes(routes) {
-  if (!routes.length) {
+function renderRoutes(routes, fleet = []) {
+  if (!routes.length && !fleet.length) {
     elements.routesList.innerHTML = '<p class="empty-state">No application routes found.</p>';
     return;
   }
@@ -229,7 +229,17 @@ function renderRoutes(routes) {
           <span class="pill ${route.admitted ? "running" : "degraded"}">${route.admitted ? "Admitted" : "Pending"}</span>
         </div>`,
     )
-    .join("");
+    .join("") + fleet.map((node) => `
+      <div class="route-row">
+        <div>
+          <a href="/terminal?node=${encodeURIComponent(node.index)}" target="_blank" rel="noopener noreferrer">
+            ${escapeHtml(node.hostname)} - SSH terminal
+          </a>
+          <span class="route-name">admin@${escapeHtml(node.ssh_host)}:${escapeHtml(node.ssh_port)}
+            / guest IP ${escapeHtml(node.guest_ip || "not discovered")}</span>
+        </div>
+        <span class="pill ${node.state === "running" ? "running" : "disabled"}">${escapeHtml(node.state)}</span>
+      </div>`).join("");
 }
 
 function renderNamespaces(namespaces) {
@@ -294,7 +304,7 @@ function render(payload) {
   renderCapacity(payload.inventory);
   renderCategories(payload.addons);
   renderAddons(payload.addons);
-  renderRoutes(payload.inventory.routes);
+  renderRoutes(payload.inventory.routes, payload.inventory.fleet || []);
   renderNamespaces(payload.inventory.namespaces);
   renderOperation(payload.operation);
   elements.lastUpdated.textContent = `Updated ${new Date().toLocaleTimeString()}`;

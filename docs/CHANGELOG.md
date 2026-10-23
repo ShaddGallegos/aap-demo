@@ -14,9 +14,112 @@ Current comparison point:
 
 - Baseline: `39564b5`
 - Latest committed state inspected: `7cbc0c2`
-- Additional working-tree documentation changes are included below.
-- Current cumulative delta: 111 files changed, approximately 10,995 insertions
-  and 839 deletions.
+- Additional working-tree implementation and documentation changes are included
+  below. Entries 35-37 record the Fleet updates completed on 2026-10-23.
+- The earlier cumulative file/line counts predate these Fleet changes and are
+  omitted rather than presented as current totals.
+
+### 37. Add explicit Red Hat connection for Fleet systems
+
+**Type:** Feature / explicit opt-in system enrollment
+
+`aap-demo fleet rhc-connect` enrolls running Fleet VMs with retained Vault CDN
+credentials, using SSH stdin and interactive PTYs instead of password arguments.
+It connects RHSM, Insights reporting, and Remote Host Configuration, reuses
+complete enrollment, and explicitly verifies all three components. RHC's
+zero-exit/partial-Insights case is handled with `insights-client --register`;
+failures remain failures until final connection status verifies.
+
+Enrollment is manual only, not triggered by normal lifecycle operations.
+CRC is explicitly deferred because its OSTree appliance lacks RHC/Insights
+packages; no host/cluster package layering is attempted. Documentation explains
+reporting/remote-management consent and the distinction between account-linked
+system inventory and individual demo-user tracking.
+
+Credentials remain in the shared encrypted Vault. They are supplied to RHC's
+interactive prompts over encrypted SSH stdin, not command-line arguments,
+plaintext credential files, or printed authentication output. Enrollment has
+bounded timeouts, reaps its PTY child process, skips stopped nodes, and returns
+failure when any running node cannot be verified. If RHSM and remote management
+are already connected, only incomplete Insights enrollment is retried.
+
+**Validation:** All three existing Fleet VMs were enrolled and verified as
+connected to RHSM, Insights, and Remote Host Configuration. Insights reports
+were uploaded, and three distinct RHSM system identities were confirmed without
+printing identifiers or credentials. A subsequent command run recognized all
+three as already connected. Seven Python tests and a focused shell test cover
+interactive credential delivery, secret non-disclosure, timeout cleanup,
+partial registration, idempotency, stopped-node exclusion, and failure
+propagation. CLI parsing, completion, secret-handling, syntax, and ShellCheck
+checks passed. CRC remains unregistered and unchanged, as explicitly deferred.
+
+**Files:** `scripts/fleet-rhc-connect.py`, `includes/fleet-rhc.sh`, `aap-demo.sh`,
+`scripts/aap-demo-completion.bash`, `test/test-fleet-rhc.py`,
+`test/test-fleet-rhc.sh`, `test/test-cli-parsing.sh`,
+`test/test-bash-completion.sh`, `README.md`, `docs/FULL-README.md`.
+
+### 36. Exchange Fleet public keys and reconcile full-stack hosts
+
+Each Fleet admin now has a unique, retained Ed25519 key; only public keys are
+exchanged. Managed SSH aliases select the correct gateway/forwarded port and pin
+host keys collected over the bootstrap connection. Managed hosts blocks contain
+IP, FQDN, and shortname entries for Fleet, development host, cluster machines,
+and application routes. Localhost, IPv6, and unmanaged entries are preserved;
+ambiguous names, malformed markers, and failed discovery fail explicitly.
+Lifecycle and registration reconcile additions/removals without VM restarts.
+
+Admin sudo now uses `admin     ALL=(ALL)       ALL`, validated by `visudo`, and
+admin is removed from `wheel`. The shared AAP credential and inventory use the
+existing `ansible` bootstrap account, preserving unattended automation without
+copying per-node admin passwords into inventory variables. Only Fleet VMs are
+configuration targets; cluster/host configuration is not changed.
+
+Fleet FQDNs use `fleet.aap-demo.test` by default. Because the VMs retain isolated
+QEMU networks, their hosts entries share the development host's gateway address;
+SSH aliases select each forwarded port. This does not provide unique guest
+addresses or direct connectivity for arbitrary protocols. Cluster machine
+entries retain discovered internal addresses, and Kubernetes services/pods
+continue using cluster DNS. Host-address or route changes require a subsequent
+reconciliation; no background hosts watcher is installed.
+
+Existing private keys are preserved, and missing public-key files are recovered
+from their matching private keys. Managed hosts and authorized-key blocks
+preserve unrelated entries while removing stale managed records. Fleet
+add/start reconciles access for all running nodes before exchanging public keys.
+Unchanged sshd configuration no longer triggers unnecessary daemon reloads.
+
+**Validation:** All nine SSH paths across the three running nodes succeeded with
+distinct admin key fingerprints and strict host verification. Passwordless admin
+sudo was rejected, hosts names resolved, application ingress returned HTTP 200,
+and AAP ping succeeded using the updated bootstrap credential. Focused tests
+cover managed-block preservation, stale-node removal, discovery failure, and
+SSH key collection without consuming inventory-loop input.
+Both shortname and FQDN SSH paths passed, real admin passwords authorized sudo
+on all three nodes, and repeated live reconciliation preserved hosts files,
+public keys, and authorized-key contents. Mocked lifecycle tests cover add,
+start, and removal without deleting or rebuilding live VMs.
+
+### 35. Reconcile Fleet inventory and expose secure node access
+
+Fleet now provisions and reconciles an `admin` account with a unique Vault-backed
+password and the managed SSH key, including existing nodes without a rebuild.
+Interactive `status --show-secrets` displays each node's host SSH endpoint,
+guest IP, username, and password. Default JSON/dashboard inventory omits passwords.
+
+AAP registration updates existing Fleet hosts and machine credentials instead
+of skipping them, and fails when its verification ping fails. Product Demos
+installation and addon wiring reconcile existing Fleet nodes into AAP.
+
+The dashboard Routes panel includes per-node SSH links to a localhost browser
+terminal using pinned local xterm assets and a server-side SSH PTY. Same-origin
+and session checks protect terminal creation/input/output; private keys and login
+passwords are not sent to the browser. Sessions are bounded and expired/closed
+on disconnect, inactivity, or dashboard restart.
+
+**Validation:** All three existing nodes accepted admin password SSH and AAP
+ad-hoc ping succeeded. Interactive status was checked without printing passwords.
+Browser SSH executed `whoami` and `hostname` as admin. Isolated Fleet, dashboard,
+inventory, CLI, and shell lint checks cover reconciliation and redaction.
 
 ### 34. Add validated Automation Hub token setup and four-day cron
 

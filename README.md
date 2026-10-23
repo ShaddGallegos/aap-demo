@@ -325,6 +325,139 @@ use, also set `AAP_DEMO_UNINSTALL_CONFIRM=UNINSTALL`.
 
 ## Credential storage
 
+### Fleet inventory and node access
+
+Fleet nodes are reconciled into the **Fleet** inventory in AAP's **Default**
+organization, with the **Fleet SSH Key** machine credential using the bootstrap
+`ansible` account for unattended privilege escalation. Interactive and browser
+SSH use `admin`; its sudo access requires its own password.
+Registration updates existing host addresses/ports and the credential, rather
+than skipping previously registered nodes. Enabling Product Demos and
+`aap-demo wire` also reconcile existing Fleet nodes; they do not create VMs.
+Create nodes first if none exist.
+
+```bash
+aap-demo fleet register                 # Reconcile existing nodes and verify AAP ping
+aap-demo fleet ssh 1                    # SSH as admin using the managed key
+aap-demo status --show-secrets          # Interactive only: per-node admin passwords and IPs
+ssh -p 2201 admin@127.0.0.1              # Password login to node 1
+```
+
+Each node has its own generated admin password, retained in the shared encrypted
+Vault under `aap_demo.fleet.node_<index>.password`. Registration reuses the
+password and configures existing nodes without rebuilding them. Admin's validated
+`/etc/sudoers.d/aap-demo-admin` contains exactly:
+
+```sudoers
+admin     ALL=(ALL)       ALL
+```
+
+Admin is removed from `wheel` to avoid inheriting passwordless group rules.
+The existing `ansible` automation account retains its bootstrap sudo access.
+
+Fleet guests have isolated QEMU user-mode networks and may all report the same
+guest IP, such as `10.0.2.15`. From the host use **127.0.0.1** and each node's
+forwarded SSH port (normally **2201**, **2202**, **2203**). AAP uses the host
+gateway address and these ports, not the isolated guest IP.
+
+#### Red Hat system enrollment (manual opt-in)
+
+Run this explicitly to enroll all **running Fleet VMs** using the retained CDN
+username/password from the shared Ansible Vault:
+
+```bash
+aap-demo fleet rhc-connect
+```
+
+This authorizes `rhc connect`: RHSM registration, Red Hat Insights inventory and
+report uploads, and activation of the Remote Host Configuration daemon (remote
+management). Systems appear under the credential owner's Red Hat account; this
+does **not** identify each person who uses the demo. Review Red Hat's data
+collection policies before enrolling. This command makes no claim that
+registration alone produces demo-usage analytics.
+
+Credentials are supplied through encrypted SSH stdin and RHC's interactive PTY
+prompts, never CLI arguments, persistent plaintext credential files, or printed
+tool output. Existing complete connections are reused. Partial Insights
+enrollment is completed with `insights-client --register`, and all three RHC
+components must verify as connected before success is reported. Errors and
+timeouts fail explicitly; raw authentication output is withheld. Run
+`sudo rhc status` on a VM for local diagnostics.
+
+There is no automatic enrollment on node creation/start or dashboard access.
+Run the command again after adding/starting nodes; stopped nodes are skipped.
+If credentials are missing, configure them with `aap-demo fleet auth configure`.
+Destroying a VM does not automatically remove its record from Red Hat's console;
+disconnect it explicitly before deletion if needed.
+
+**CRC limitation:** the current OSTree MicroShift appliance has no `rhc` or
+`insights-client`. It is not enrolled by this command. Installing or layering
+those packages and restarting the cluster requires a separate supported plan;
+the command does not mutate the cluster appliance or development host.
+
+#### Node-to-node SSH and managed hosts
+
+Every Fleet admin gets its own Ed25519 key. Only public keys are exchanged;
+private keys remain on their originating VM. Existing keys are reused.
+From any Fleet VM, use either name:
+
+```bash
+ssh aap-fleet-node-2
+ssh aap-fleet-node-2.fleet.aap-demo.test
+sudo -v                              # Enter this node's admin password
+```
+
+Managed SSH aliases select the host gateway and forwarded port automatically.
+Host keys are collected over the verified bootstrap connection and pinned with
+strict checking. Files are in admin's `.ssh` directory: `aap-demo-config` and
+`aap-demo-known_hosts`; the user's main SSH config includes the managed config.
+Authorized-key updates preserve unmanaged keys and remove stale managed keys.
+
+Each Fleet VM gets a managed block in `/etc/hosts`, with **IPv4 FQDN shortname**
+entries for all defined Fleet nodes, the development host (`aap-demo-host`),
+cluster machines, and exposed application routes. Localhost, IPv6, and other
+unmanaged entries are preserved. Conflicting unmanaged aliases, duplicate names,
+malformed markers, and failed cluster discovery cause explicit failures rather
+than overwriting local configuration or installing incomplete discovery results.
+Kubernetes pods and services continue to use cluster DNS.
+
+Fleet aliases intentionally share the host gateway IP: `/etc/hosts` cannot encode
+ports and does not give isolated VMs unique IPs. Only the SSH aliases select the
+right VM; arbitrary protocols still require their own forwarding. Application
+routes map to the host ingress listener instead of guest loopback. Cluster
+machine entries retain their discovered internal IPs; this does not add routing
+to otherwise unreachable cluster networks.
+
+Reconciliation runs on Fleet add/start/remove, `fleet register`, Product Demos
+installation, and `aap-demo wire`. Stopped nodes retain hosts entries, but their
+SSH aliases and public keys are included only while running; starting them
+reconciles again. Rerun `aap-demo fleet register` after host address or route
+changes. No background hosts watcher is installed. Only Fleet VMs are modified;
+the development host and cluster VM are discovery sources, not configuration
+targets. The default suffix is `fleet.aap-demo.test`; override consistently with
+`FLEET_DOMAIN` if needed.
+
+The dashboard's **Application Access / Routes** panel lists every Fleet node.
+Click its **SSH terminal** link to open an interactive browser terminal that
+automatically connects as `admin`, using the managed SSH key on the server.
+Passwords and private keys are never sent to the browser. For a fresh checkout,
+install the pinned local terminal renderer once:
+
+```bash
+npm ci --prefix dashboard
+aap-demo dashboard
+```
+
+No CDN or external terminal service is used. Browser terminals are restricted
+to the localhost dashboard and known Fleet nodes, require its session token
+and same-origin requests, and verify stored SSH host keys. Up to four sessions
+can run concurrently. Disconnect or close the tab when finished; abandoned
+sessions expire after five minutes without requests. Restarting the dashboard
+closes terminal sessions, not the VMs. Fleet browser SSH is supported on Linux
+and macOS hosts.
+
+### Shared Vault
+
 aap-demo stores retained passwords and tokens under the `aap_demo` namespace
 and the `ah_offline_token` key in Ansible Vault-encrypted
 `~/.ansible/conf/env.yml`. The Vault password file is

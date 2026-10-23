@@ -379,7 +379,10 @@ _aap_demo_inventory_storage() {
 aap_demo_collect_system_inventory() {
   local secret_mode="${1:-omit}"
   local cluster_state cluster_name generated_at addons addons_text host_os host_arch aap_subscription context kubernetes_version
-  local namespaces services pods namespace_status routes credentials api_keys ingress vm storage
+  local namespaces services pods namespace_status routes credentials api_keys ingress vm storage fleet
+  # shellcheck source=fleet-access.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/fleet-access.sh"
+  fleet=$(fleet_access_inventory "$secret_mode") || return 1
 
   case "$secret_mode" in
     include | redact | omit) ;;
@@ -453,6 +456,7 @@ aap_demo_collect_system_inventory() {
     --argjson namespaces "$namespace_status" \
     --argjson routes "$routes" \
     --argjson credentials "$credentials" \
+    --argjson fleet "$fleet" \
     --argjson api_keys "$api_keys" \
     --argjson services "$services" \
     --argjson pods "$pods" \
@@ -491,6 +495,7 @@ aap_demo_collect_system_inventory() {
       namespaces: $namespaces,
       routes: $routes,
       credentials: $credentials,
+      fleet: $fleet,
       api_keys: $api_keys,
       services: $services,
       pods: $pods,

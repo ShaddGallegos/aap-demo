@@ -354,6 +354,50 @@ password for other products. Co-locating
 the encrypted Vault and password protects against accidental
 publication, not compromise of the local user account.
 
+Fleet node access is reconciled by `aap-demo fleet register`, Product Demos
+installation (when nodes exist), and `aap-demo wire`. The AAP **Fleet** inventory
+in the **Default** organization and **Fleet SSH Key** credential are updated to
+use the bootstrap `ansible` account for unattended automation. Interactive admin
+sudo requires its Vault-backed password, with the exact rule
+`admin     ALL=(ALL)       ALL`. Registration verifies connectivity with an AAP
+ad-hoc ping and fails explicitly if verification fails.
+
+Fleet add/start/remove and registration reconcile unique per-node admin Ed25519
+keys, public-key exchange, pinned SSH aliases, and managed `/etc/hosts` blocks.
+From a Fleet VM, `ssh aap-fleet-node-2` or
+`ssh aap-fleet-node-2.fleet.aap-demo.test` uses the proper forwarded port.
+Hosts blocks include Fleet, host, cluster machines, and exposed routes, while
+preserving unmanaged/localhost/IPv6 entries and Kubernetes DNS. Private keys
+are never copied between nodes. The host and cluster are not modified.
+Because Fleet uses isolated QEMU networking, its hosts entries share the gateway
+IP; this enables named SSH through aliases, not direct IP networking between VMs.
+Run `aap-demo fleet register` after route or host-address changes.
+
+Red Hat system enrollment is a separate, explicit opt-in command:
+`aap-demo fleet rhc-connect`. It uses Vault-backed CDN credentials to connect
+running Fleet VMs to RHSM, Insights reporting, and Remote Host Configuration.
+Credentials travel through encrypted SSH stdin and interactive prompts, not
+process arguments or logs. Complete connections are reused, partial Insights
+registration is completed, and final status must verify all components.
+New nodes are not automatically enrolled. This associates machines with the
+Red Hat account; it does not identify individual demo users. CRC is deferred:
+the OSTree appliance lacks RHC/Insights packages and is left unchanged.
+See [manual enrollment](../README.md#red-hat-system-enrollment-manual-opt-in).
+
+Use `aap-demo fleet ssh 1` for key-based SSH, or
+`ssh -p 2201 admin@127.0.0.1` for password login to the first node.
+`aap-demo status --show-secrets` displays each node's IP, forwarded SSH port,
+username, and Vault-backed password only in an interactive terminal. Default
+status, JSON inventory, and dashboard status omit passwords.
+
+The dashboard **Application Access / Routes** panel has a browser SSH terminal
+link for each node. Install its pinned renderer with `npm ci --prefix dashboard`
+after a fresh checkout. SSH authentication remains on the host, never in a URL
+or browser response; terminals are localhost-only, same-origin/session-protected,
+bounded to four sessions, and expire after five minutes without requests.
+See [Fleet inventory and node access](../README.md#fleet-inventory-and-node-access)
+for networking and SSH host-key details.
+
 `aap-demo status --show-secrets` reveals available AAP and addon login
 passwords only in an interactive terminal; redirected output is rejected. The
 Customer Portal token from `https://access.redhat.com/management/api` is stored

@@ -40,6 +40,8 @@ assert_completes enable aap-demo credentials keepalive ""
 assert_completes setup aap-demo credentials keepalive se
 assert_completes run aap-demo credentials keepalive r
 assert_completes auth aap-demo fleet ""
+assert_completes ssh aap-demo fleet s
+assert_completes rhc-connect aap-demo fleet rh
 assert_completes register aap-demo fleet reg
 assert_completes status aap-demo fleet auth st
 assert_completes rhel9 aap-demo fleet add --image ""

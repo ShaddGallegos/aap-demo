@@ -5,6 +5,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AAP_DEMO_SH="${SCRIPT_DIR}/../aap-demo.sh"
+test_home=$(mktemp -d)
+trap 'rm -rf "$test_home"' EXIT
 
 output=""
 if output=$(QUIET=true "$AAP_DEMO_SH" version destroy 2>&1); then
@@ -20,6 +22,12 @@ fi
 
 echo "PASS: destroy is only accepted as a fleet subcommand"
 
+if output=$(HOME="$test_home" QUIET=true "$AAP_DEMO_SH" fleet ssh ../1 2>&1); then
+  echo "FAIL: Fleet SSH accepted an invalid node index"; exit 1
+fi
+grep -q 'Fleet SSH requires a node index' <<<"$output"
+echo "PASS: fleet ssh remains a nested subcommand and validates its node index"
+
 output=$(QUIET=true "$AAP_DEMO_SH" preflight 2>&1) || true
 if ! grep -q "aap-demo preflight" <<<"$output"; then
   echo "FAIL: preflight was not recognized as a top-level command"
@@ -29,8 +37,6 @@ fi
 
 echo "PASS: preflight is recognized as a top-level command"
 
-test_home=$(mktemp -d)
-trap 'rm -rf "$test_home"' EXIT
 if output=$(HOME="$test_home" QUIET=true "$AAP_DEMO_SH" fleet auth status 2>&1); then
   echo "FAIL: unconfigured fleet auth status unexpectedly succeeded"
   exit 1
@@ -57,7 +63,7 @@ fi
 
 echo "PASS: enable fleet preserves enable as the top-level command"
 
-if ! grep -A7 '^    start)' <<<"$parser" | grep -q 'COMMAND" = "fleet"'; then
+if ! grep -A7 '^    start | ssh)' <<<"$parser" | grep -q 'COMMAND" = "fleet"'; then
   echo "FAIL: fleet start is not preserved as a nested subcommand"
   exit 1
 fi
@@ -107,6 +113,8 @@ for text in \
   "fleet add [count] --image <rhel9|rhel10|local-qcow2-path>" \
   "fleet register" \
   "fleet start" \
+  "fleet ssh [index]" \
+  "fleet rhc-connect" \
   "fleet list" \
   "fleet remove [count|name]" \
   "fleet destroy" \

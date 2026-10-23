@@ -11,6 +11,8 @@ FLEET_DIR="${AAP_DEMO_DIR:-$HOME/.aap-demo}/fleet"
 FLEET_NODE_MEM="${FLEET_NODE_MEM:-1024}"
 FLEET_NODE_CPUS="${FLEET_NODE_CPUS:-2}"
 FLEET_NODE_PORT_BASE=2200
+# shellcheck source=../../includes/fleet-access.sh
+source "${FLEET_ADDON_DIR}/../../includes/fleet-access.sh"
 
 # -----------------------------------------------------------------------------
 # Migration from seed-nodes → fleet (one-time)
@@ -224,11 +226,14 @@ _fleet_validate_image() {
 
 _fleet_generate_ssh_key() {
   local key_path="${FLEET_DIR}/ssh_key"
-  if [ -f "$key_path" ]; then
-    return 0
+  mkdir -p "$FLEET_DIR" || return 1
+  chmod 700 "$FLEET_DIR" || return 1
+  if [ ! -f "$key_path" ]; then
+    ssh-keygen -t ed25519 -f "$key_path" -N "" -C "aap-demo-fleet" -q || return 1
   fi
-  mkdir -p "$FLEET_DIR"
-  ssh-keygen -t ed25519 -f "$key_path" -N "" -C "aap-demo-fleet" -q
+  if [ ! -f "${key_path}.pub" ]; then
+    ssh-keygen -y -P '' -f "$key_path" >"${key_path}.pub" || return 1
+  fi
   chmod 600 "$key_path"
   chmod 644 "${key_path}.pub"
 }
@@ -416,7 +421,8 @@ EOF
       -o LogLevel=ERROR -o ConnectTimeout=2 -o BatchMode=yes \
       ansible@127.0.0.1 'true' 2>/dev/null; then
       echo "  ✓ ${hostname} ready (SSH on port ${port})"
-      return 0
+      fleet_reconcile_access "$index"
+      return $?
     fi
     attempts=$((attempts + 1))
     sleep 3
@@ -436,9 +442,10 @@ fleet_node_delete() {
     return 1
   fi
 
-  local pid hostname
+  local pid hostname port
   pid=$(grep '^PID=' "${node_dir}/meta" 2>/dev/null | cut -d= -f2)
   hostname=$(grep '^HOSTNAME=' "${node_dir}/meta" 2>/dev/null | cut -d= -f2)
+  port=$(grep '^PORT=' "${node_dir}/meta" 2>/dev/null | cut -d= -f2)
 
   # Kill QEMU process
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
@@ -454,6 +461,10 @@ fleet_node_delete() {
     fi
   fi
 
+  if [ -f "$FLEET_DIR/known_hosts" ] && [[ "$port" =~ ^[0-9]+$ ]]; then
+    ssh-keygen -R "[127.0.0.1]:$port" -f "$FLEET_DIR/known_hosts" >/dev/null || return 1
+    rm -f "$FLEET_DIR/known_hosts.old"
+  fi
   rm -rf "$node_dir"
   echo "  ✓ Removed ${hostname:-node-${index}}"
 }
@@ -544,7 +555,8 @@ fleet_node_start() {
       -o LogLevel=ERROR -o ConnectTimeout=2 -o BatchMode=yes \
       ansible@127.0.0.1 'true' 2>/dev/null; then
       echo "  ✓ ${hostname} ready (SSH on port ${port})"
-      return 0
+      fleet_reconcile_access "$index"
+      return $?
     fi
     attempts=$((attempts + 1))
     sleep 3
@@ -570,6 +582,8 @@ fleet_start_all() {
     return 1
   else
     echo "  ✓ Fleet nodes started"
+    fleet_reconcile_running_access || return 1
+    fleet_reconcile_stack || return 1
   fi
 }
 
@@ -674,7 +688,7 @@ fleet_create_all() {
   # Check available RAM before creating nodes
   _fleet_check_ram "$count" || return 1
 
-  _fleet_generate_ssh_key
+  _fleet_generate_ssh_key || return 1
 
   echo ""
   echo "Creating ${count} fleet node(s)..."
@@ -694,6 +708,8 @@ fleet_create_all() {
   else
     echo "⚠ Created ${created}/${count} fleet node(s)"
   fi
+  fleet_reconcile_running_access || return 1
+  fleet_reconcile_stack
 }
 
 fleet_stop_all() {
@@ -746,6 +762,7 @@ fleet_remove_last() {
   done
 
   echo "✓ Removed ${removed} fleet node(s)"
+  fleet_reconcile_stack
 }
 
 fleet_remove_by_name() {
@@ -759,7 +776,8 @@ fleet_remove_by_name() {
     return 1
   fi
 
-  fleet_node_delete "$index"
+  fleet_node_delete "$index" || return 1
+  fleet_reconcile_stack
 }
 
 # Count of running nodes

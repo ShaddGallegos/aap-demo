@@ -675,3 +675,15 @@ footer {
     transition-duration: 0.01ms !important;
   }
 }
+.terminal-page {
+  padding: 1rem;
+}
+
+.terminal-page header {
+  margin-bottom: 1rem;
+}
+
+#ssh-terminal {
+  height: calc(100vh - 180px);
+  min-height: 240px;
+}

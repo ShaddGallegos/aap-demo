@@ -4,12 +4,16 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import errno
 import json
 import os
 import platform
 import queue
 import re
 import secrets
+import select
+import signal
 import subprocess
 import sys
 import threading
@@ -28,6 +32,92 @@ HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 MAX_BODY_BYTES = 4096
 OPERATION_TIMEOUT_SECONDS = 3600
+TERMINAL_IDLE_SECONDS = 300
+
+
+class FleetTerminal:
+    """One bounded SSH PTY; the browser never receives the key or login password."""
+
+    def __init__(self, root: Path, port: int) -> None:
+        if os.name != "posix":
+            raise RuntimeError("Browser SSH requires a Linux or macOS dashboard host")
+        import pty
+
+        self.lock = threading.Lock()
+        self.last_used = time.monotonic()
+        self.master, slave = pty.openpty()
+        try:
+            self.process = subprocess.Popen(
+                [
+                    "ssh", "-tt", "-p", str(port), "-i", str(root / "ssh_key"),
+                    "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
+                    "-o", "StrictHostKeyChecking=yes",
+                    "-o", f"UserKnownHostsFile={root / 'known_hosts'}",
+                    "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=30",
+                    "-o", "ServerAliveCountMax=3", "admin@127.0.0.1",
+                ],
+                stdin=slave, stdout=slave, stderr=slave,
+                start_new_session=True,
+                env={**os.environ, "TERM": "xterm-256color"},
+            )
+        except OSError:
+            os.close(self.master)
+            raise
+        finally:
+            os.close(slave)
+        os.set_blocking(self.master, False)
+        self.closed = False
+
+    def exchange(self, data: str, cols: int, rows: int) -> dict[str, Any]:
+        import fcntl
+        import struct
+        import termios
+
+        with self.lock:
+            if self.closed:
+                raise RuntimeError("Terminal session has closed")
+            self.last_used = time.monotonic()
+            fcntl.ioctl(self.master, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+            incoming = data.encode("utf-8")
+            if incoming:
+                written = os.write(self.master, incoming)
+                if written != len(incoming):
+                    raise RuntimeError("Terminal input was not fully delivered; reconnect")
+            output = bytearray()
+            while len(output) < 65536 and select.select([self.master], [], [], 0)[0]:
+                try:
+                    chunk = os.read(self.master, 4096)
+                except OSError as error:
+                    if error.errno == errno.EIO:  # A terminated PTY reports EIO on Linux.
+                        break
+                    raise
+                if not chunk:
+                    break
+                output.extend(chunk)
+            return {
+                "output": base64.b64encode(output).decode("ascii"),
+                "exited": self.process.poll() is not None and len(output) < 65536,
+            }
+
+    def close(self) -> None:
+        with self.lock:
+            if self.closed:
+                return
+            self.closed = True
+            if self.process.poll() is None:
+                try:
+                    os.killpg(self.process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass  # SSH can exit between poll() and signalling its process group.
+                try:
+                    self.process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(self.process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    self.process.wait(timeout=2)
+            os.close(self.master)
 
 
 def load_catalog(repo_root: Path) -> dict[str, Any]:
@@ -143,6 +233,54 @@ class DashboardApp:
         self.restart_requested = False
         self.cli = repo_root / "aap-demo.sh"
         self.static_dir = repo_root / "dashboard" / "static"
+        self.terminals: dict[str, FleetTerminal] = {}
+        self.terminal_lock = threading.Lock()
+
+    def reap_terminals(self, *, all_sessions: bool = False) -> None:
+        with self.terminal_lock:
+            for session_id, terminal in list(self.terminals.items()):
+                if all_sessions or time.monotonic() - terminal.last_used > TERMINAL_IDLE_SECONDS:
+                    terminal.close()
+                    del self.terminals[session_id]
+
+    def start_terminal(self, index: int) -> str:
+        self.reap_terminals()
+        root = Path(os.environ.get("AAP_DEMO_DIR", Path.home() / ".aap-demo")) / "fleet"
+        nodes = self.inventory().get("fleet", [])
+        node = next((node for node in nodes if node.get("index") == index), None)
+        if node is None or node.get("state") != "running":
+            raise RuntimeError("Fleet node is missing or stopped")
+        port = node.get("ssh_port")
+        if not isinstance(port, int) or not 1 <= port <= 65535:
+            raise RuntimeError("Fleet node has an invalid SSH port")
+        if not (root / "ssh_key").is_file() or not (root / "known_hosts").is_file():
+            raise RuntimeError("Fleet SSH access is not configured; run 'aap-demo fleet register'")
+        if not (self.repo_root / "dashboard/node_modules/@xterm/xterm/lib/xterm.js").is_file():
+            raise RuntimeError("Browser terminal assets are missing; run 'npm ci --prefix dashboard'")
+        with self.terminal_lock:
+            if len(self.terminals) >= 4:
+                raise RuntimeError("At most four browser terminals may be open; close a session first")
+            session_id = secrets.token_hex(16)
+            self.terminals[session_id] = FleetTerminal(root, port)
+        return session_id
+
+    def terminal_io(self, session_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        self.reap_terminals()
+        with self.terminal_lock:
+            terminal = self.terminals.get(session_id)
+            if terminal is None:
+                raise RuntimeError("Terminal session expired; reconnect")
+            if body.get("close") is True:
+                terminal.close()
+                del self.terminals[session_id]
+                return {"closed": True}
+            data = body.get("data", "")
+            cols, rows = body.get("cols", 80), body.get("rows", 24)
+            if not isinstance(data, str) or len(data.encode("utf-8")) > 2048:
+                raise ValueError("Terminal input must be at most 2048 bytes")
+            if type(cols) is not int or type(rows) is not int or not 2 <= cols <= 500 or not 2 <= rows <= 200:
+                raise ValueError("Invalid terminal dimensions")
+            return terminal.exchange(data, cols, rows)
 
     def run_cli(self, *arguments: str, timeout: int = 120) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -333,6 +471,8 @@ def create_handler(app: DashboardApp) -> type[BaseHTTPRequestHandler]:
             return False
 
         def log_message(self, format_string: str, *args: object) -> None:
+            if re.fullmatch(r"/api/terminals/[a-f0-9]{32}/io", urlparse(self.path).path) and len(args) > 1 and str(args[1]) == "200":
+                return
             print(f"[dashboard] {self.address_string()} {format_string % args}")
 
         def end_headers(self) -> None:
@@ -340,9 +480,11 @@ def create_handler(app: DashboardApp) -> type[BaseHTTPRequestHandler]:
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("X-Frame-Options", "DENY")
             self.send_header("Referrer-Policy", "no-referrer")
+            # xterm computes inline cell geometry; only the terminal page needs this allowance.
+            style_policy = "'self' 'unsafe-inline'" if urlparse(self.path).path == "/terminal" else "'self'"
             self.send_header(
                 "Content-Security-Policy",
-                "default-src 'self'; style-src 'self'; script-src 'self'; "
+                f"default-src 'self'; style-src {style_policy}; script-src 'self'; "
                 "connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'",
             )
             super().end_headers()
@@ -376,6 +518,18 @@ def create_handler(app: DashboardApp) -> type[BaseHTTPRequestHandler]:
                 self.file_response(app.static_dir / "app.css", "text/css; charset=utf-8")
             elif path == "/app.js":
                 self.file_response(app.static_dir / "app.js", "text/javascript; charset=utf-8")
+            elif path == "/terminal":
+                self.file_response(app.static_dir / "terminal.html", "text/html; charset=utf-8")
+            elif path == "/terminal.js":
+                self.file_response(app.static_dir / "terminal.js", "text/javascript; charset=utf-8")
+            elif path in ("/vendor/xterm.js", "/vendor/xterm.css", "/vendor/addon-fit.js"):
+                assets = {
+                    "/vendor/xterm.js": ("@xterm/xterm/lib/xterm.js", "text/javascript"),
+                    "/vendor/xterm.css": ("@xterm/xterm/css/xterm.css", "text/css"),
+                    "/vendor/addon-fit.js": ("@xterm/addon-fit/lib/addon-fit.js", "text/javascript"),
+                }
+                asset, content_type = assets[path]
+                self.file_response(app.repo_root / "dashboard/node_modules" / asset, content_type)
             elif path == "/api/session":
                 self.json_response(HTTPStatus.OK, {"token": app.session_token})
             elif path == "/api/health":
@@ -425,6 +579,24 @@ def create_handler(app: DashboardApp) -> type[BaseHTTPRequestHandler]:
                 return
             if not isinstance(body, dict):
                 self.json_response(HTTPStatus.BAD_REQUEST, {"error": "Expected a JSON object"})
+                return
+
+            terminal_start = re.fullmatch(r"/api/fleet/([1-9][0-9]*)/terminal", urlparse(self.path).path)
+            terminal_io = re.fullmatch(r"/api/terminals/([a-f0-9]{32})/io", urlparse(self.path).path)
+            if terminal_start or terminal_io:
+                try:
+                    if terminal_start:
+                        result = {"id": app.start_terminal(int(terminal_start[1]))}
+                    else:
+                        assert terminal_io is not None
+                        result = app.terminal_io(terminal_io[1], body)
+                except ValueError as error:
+                    self.json_response(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                    return
+                except (RuntimeError, OSError) as error:
+                    self.json_response(HTTPStatus.CONFLICT, {"error": str(error)})
+                    return
+                self.json_response(HTTPStatus.OK, result)
                 return
 
             if urlparse(self.path).path == "/api/restart":
@@ -578,10 +750,17 @@ def main() -> int:
     if open_browser:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()
     try:
+        def reap_idle_terminals() -> None:
+            while not app.restart_requested:
+                time.sleep(30)
+                app.reap_terminals()
+
+        threading.Thread(target=reap_idle_terminals, daemon=True).start()
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nStopping dashboard...")
     finally:
+        app.reap_terminals(all_sessions=True)
         server.server_close()
     if app.restart_requested:
         print("Restarting dashboard...", flush=True)

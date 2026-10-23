@@ -1257,6 +1257,12 @@ aap_demo_wire() {
   wire_apd_aap_credential
   wire_apd_galaxy_if_present
   wire_apd_openshift
+  if compgen -G "${AAP_DEMO_DIR:-$HOME/.aap-demo}/fleet/node-*/meta" >/dev/null; then
+    wire_log "Reconciling Fleet SSH access and AAP inventory..."
+    # shellcheck source=fleet-access.sh
+    source "${_WIRE_SCRIPT_DIR}/fleet-access.sh"
+    fleet_reconcile_existing_inventory || return 1
+  fi
   wire_restore_coredns_route_rewrite || wire_warn "CoreDNS route rewrite skipped"
   wire_ao_network_access || wire_warn "AO integration allow-list configuration skipped"
   if wire_ao_deployed; then

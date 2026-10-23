@@ -283,10 +283,6 @@ print(data.get("error") or data.get("detail") or "unknown error")
 
 _fleet_aap_get_host_gateway_ip() {
   local cached="${FLEET_DIR}/host_gateway_ip"
-  if [ -f "$cached" ]; then
-    cat "$cached"
-    return 0
-  fi
 
   local gw_ip=""
 
@@ -339,7 +335,7 @@ _fleet_aap_find_resource() {
   local endpoint="$1"
   local name="$2"
   local resp
-  resp=$(_fleet_aap_api GET "${endpoint}?name=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${name}'))")")
+  resp=$(_fleet_aap_api GET "${endpoint}?name=$(jq -rn --arg name "$name" '$name|@uri')") || return 1
   echo "$resp" | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['results'][0]['id'] if r.get('count',0)>0 else '')" 2>/dev/null
 }
 
@@ -351,19 +347,11 @@ _fleet_aap_create_credential() {
 
   # Check if already exists
   local existing
-  existing=$(_fleet_aap_find_resource "/credentials/" "$cred_name")
-  if [ -n "$existing" ]; then
-    echo "  ✓ Credential '${cred_name}' exists (id: ${existing})" >&2
-    echo "$existing"
-    return 0
-  fi
-
-  local ssh_key_data
-  ssh_key_data=$(cat "$ssh_key_path")
+  existing=$(_fleet_aap_find_resource "/credentials/" "$cred_name") || return 1
 
   # JSON-escape the SSH key (newlines → \n)
   local escaped_key
-  escaped_key=$(python3 -c "import json; print(json.dumps(open('${ssh_key_path}').read()))")
+  escaped_key=$(python3 -c 'import json,sys; print(json.dumps(open(sys.argv[1]).read()))' "$ssh_key_path") || return 1
 
   local body
   body=$(
@@ -381,6 +369,12 @@ CRED_EOF
   )
 
   local resp
+  if [ -n "$existing" ]; then
+    _fleet_aap_api PATCH "/credentials/${existing}/" "$body" >/dev/null || return 1
+    echo "  ✓ Updated credential '${cred_name}' (id: ${existing})" >&2
+    echo "$existing"
+    return 0
+  fi
   resp=$(_fleet_aap_api POST "/credentials/" "$body")
   local cred_id
   cred_id=$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
@@ -440,14 +434,10 @@ _fleet_aap_create_host() {
 
   # Check if already exists
   local existing
-  existing=$(_fleet_aap_find_resource "/hosts/" "$hostname")
-  if [ -n "$existing" ]; then
-    echo "  ✓ Host '${hostname}' exists (id: ${existing})"
-    return 0
-  fi
+  existing=$(_fleet_aap_find_resource "/inventories/${inv_id}/hosts/" "$hostname") || return 1
 
   local variables
-  variables="ansible_host: ${host_ip}\nansible_port: ${port}\nansible_user: ansible"
+  variables="ansible_host: ${host_ip}\nansible_port: ${port}\nansible_user: ansible\nansible_become: true"
 
   local body
   body=$(
@@ -461,6 +451,11 @@ HOST_EOF
   )
 
   local resp
+  if [ -n "$existing" ]; then
+    _fleet_aap_api PATCH "/hosts/${existing}/" "$body" >/dev/null || return 1
+    echo "  ✓ Updated host '${hostname}' (id: ${existing})"
+    return 0
+  fi
   resp=$(_fleet_aap_api POST "/hosts/" "$body")
   local host_id
   host_id=$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
@@ -558,18 +553,20 @@ PING_EOF
         failed)
           echo "  ⚠ Ping failed — some nodes may not be reachable yet"
           echo "    Check in AAP UI: Jobs → Ad Hoc Commands"
-          return 0
+          return 1
           ;;
         error | canceled)
           echo "  ⚠ Ping ${job_status}"
-          return 0
+          return 1
           ;;
       esac
       attempts=$((attempts + 1))
     done
     echo "  ⚠ Ping still running — check AAP UI for results"
+    return 1
   else
     echo "  ⚠ Could not launch ad-hoc ping"
+    return 1
   fi
 }
 
@@ -581,6 +578,12 @@ fleet_register_aap() {
   echo ""
   echo "Registering fleet nodes in AAP..."
 
+  if declare -F fleet_reconcile_running_access >/dev/null; then
+    fleet_reconcile_running_access || return 1
+  fi
+  if declare -F fleet_reconcile_stack >/dev/null; then
+    fleet_reconcile_stack || return 1
+  fi
   _fleet_aap_get_auth || return 1
   _fleet_aap_ensure_subscription || return 1
 
@@ -644,7 +647,7 @@ fleet_register_aap() {
   fi
 
   # Run ad-hoc ping
-  _fleet_aap_run_ping "$inv_id" "$cred_id"
+  _fleet_aap_run_ping "$inv_id" "$cred_id" || return 1
 
   echo ""
   echo "✓ Fleet nodes registered in AAP"

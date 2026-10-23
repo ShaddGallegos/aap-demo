@@ -192,6 +192,17 @@ $(_aap_demo_system_info_namespaces_markdown "$inventory")
 
 $(_aap_demo_system_info_routes_markdown "$inventory")
 
+## Fleet SSH Access
+
+Fleet guests use isolated QEMU networks. Use the host address and unique
+forwarded SSH port, not the shared guest address, from this host.
+
+$(jq -r '
+  (.fleet // [])[] |
+  "- \(.hostname): `ssh -p \(.ssh_port) \(.username)@\(.ssh_host)`; guest IP: `\(.guest_ip // "unknown")`; state: \(.state)" +
+  (if .password != null then "\n  Password: `" + .password + "`" else "\n  Password: omitted" end)
+' "$inventory")
+
 ### Common API paths
 
 - AAP Gateway API: \`/api/gateway/v1/\`

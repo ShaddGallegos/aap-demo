@@ -211,7 +211,7 @@ for arg in "$@"; do
         COMMAND="$arg"
       fi
       ;;
-    start)
+    start | ssh)
       if [ "$COMMAND" = "fleet" ]; then
         EXTRA_ARGS+=("$arg")
       else
@@ -229,7 +229,7 @@ for arg in "$@"; do
         exit 1
       fi
       ;;
-    deploy | deploy-all | repair | clean | maintenance | credentials | stop | restart | service | setup | create | watch | update | config | redeploy | redeploy-all | redhat-status | rh-status | kubeconfig | ssh | idle | preflight | diagnose | must-gather | enable | disable | wire | system-info | dashboard | version | help | --help | -h | --version | -V)
+    deploy | deploy-all | repair | clean | maintenance | credentials | stop | restart | service | setup | create | watch | update | config | redeploy | redeploy-all | redhat-status | rh-status | kubeconfig | idle | preflight | diagnose | must-gather | enable | disable | wire | system-info | dashboard | version | help | --help | -h | --version | -V)
       if [ "$COMMAND" = "credentials" ]; then
         EXTRA_ARGS+=("$arg")
       else
@@ -688,7 +688,9 @@ FLEET COMMANDS:
                                     Download/cache an entitled image and create VMs
     fleet register                  License AAP if needed, register nodes, and ping them
                                     Uses a saved subscription ID or first entitled subscription
+    fleet rhc-connect               Enroll running Fleet VMs in RHSM/Insights/remote management
     fleet start                     Start preserved Fleet VM overlays
+    fleet ssh [index]               Open an admin SSH shell (default: node 1)
     fleet list                      List Fleet VM state
     fleet remove [count|name]       Deregister and remove newest or named VMs
     fleet destroy                   Remove all Fleet VMs and AAP Fleet resources
@@ -1919,6 +1921,22 @@ cmd_kubeconfig() {
   echo "  export KUBECONFIG=$AAP_DEMO_KUBECONFIG"
 }
 
+_show_fleet_status() {
+  if ! compgen -G "${AAP_DEMO_DIR:-$HOME/.aap-demo}/fleet/node-*/meta" >/dev/null; then
+    return 0
+  fi
+  source "${SCRIPT_DIR}/addons/fleet/fleet.sh"
+  local fleet_nodes mode=omit
+  [ "$SHOW_SECRETS" != true ] || mode=include
+  fleet_nodes=$(fleet_access_inventory "$mode") || return 1
+  echo "Fleet:"
+  echo "-----------"
+  fleet_list
+  jq -r '.[] | "  \(.hostname): ssh -p \(.ssh_port) \(.username)@\(.ssh_host)\n    Guest IP: \(.guest_ip // "not discovered")" +
+    (if .password != null then "\n    Username: \(.username)\n    Password: \(.password)" else "" end)' <<<"$fleet_nodes"
+  echo ""
+}
+
 cmd_status() {
   echo ""
   printf "\033[1mAAP Demo Status\033[0m\n"
@@ -1943,11 +1961,13 @@ cmd_status() {
     printf "Cluster:     \033[1;33mstopped\033[0m\n"
     echo ""
     echo "Start with: crc start"
+    _show_fleet_status || return 1
     return 0
   else
     printf "Cluster:     \033[1;31mnot running\033[0m\n"
     echo ""
     echo "Start with: aap-demo create"
+    _show_fleet_status || return 1
     return 0
   fi
 
@@ -2203,18 +2223,7 @@ cmd_status() {
   done
   echo ""
 
-  # Show fleet nodes (addon)
-  if [ -d "${AAP_DEMO_DIR:-$HOME/.aap-demo}/fleet" ] && [ -f "${SCRIPT_DIR}/addons/fleet/fleet.sh" ]; then
-    source "${SCRIPT_DIR}/addons/fleet/fleet.sh"
-    local _node_count
-    _node_count=$(fleet_count 2>/dev/null || echo "0")
-    if [ "$_node_count" -gt 0 ] 2>/dev/null; then
-      echo "Fleet:"
-      echo "-----------"
-      fleet_list
-      echo ""
-    fi
-  fi
+  _show_fleet_status
 }
 
 cmd_status_json() {
@@ -3289,11 +3298,15 @@ cmd_fleet() {
   source "${fleet_dir}/fleet-auth.sh"
   source "${fleet_dir}/fleet-cli.sh"
   source "${fleet_dir}/fleet-images.sh"
+  source "${SCRIPT_DIR}/includes/fleet-rhc.sh"
 
   local subcmd="${1:-}"
   shift 2>/dev/null || true
 
   case "$subcmd" in
+    rhc-connect)
+      fleet_rhc_connect "$@"
+      ;;
     auth)
       fleet_redhat_auth "${1:-configure}"
       ;;
@@ -3333,6 +3346,15 @@ cmd_fleet() {
         return 1
       fi
       fleet_register_aap
+      ;;
+    ssh)
+      local index="${1:-1}" port
+      [[ "$index" =~ ^[1-9][0-9]*$ ]] || { _err "Fleet SSH requires a node index"; return 1; }
+      port=$(sed -n 's/^PORT=//p' "$FLEET_DIR/node-$index/meta") || return 1
+      [[ "$port" =~ ^[0-9]+$ ]] || { _err "Invalid Fleet node port"; return 1; }
+      _aap_demo_release_operation_lock
+      ssh -t -p "$port" -i "$FLEET_DIR/ssh_key" \
+        -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$FLEET_DIR/known_hosts" admin@127.0.0.1
       ;;
     remove)
       local target="${1:-1}"
@@ -3377,7 +3399,9 @@ cmd_fleet() {
       echo "  add [count] --image <rhel9|rhel10|local-qcow2-path>"
       echo "                                 Create fleet node VMs"
       echo "  register                     Register existing Fleet VMs in AAP"
+      echo "  rhc-connect                  Enroll running Fleet VMs with Red Hat"
       echo "  start                        Start preserved Fleet VMs"
+      echo "  ssh [index]                  Open an admin SSH shell on a Fleet node"
       echo "  remove [count|name]          Remove fleet node VMs"
       echo "  list                         List fleet node VMs"
       echo "  destroy                      Remove all VMs and AAP resources"

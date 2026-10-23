@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import unittest
+import base64
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -80,6 +81,10 @@ def fixture_inventory() -> dict[str, Any]:
             }
         },
         "routes": [],
+        "fleet": [
+            {"index": 1, "hostname": "aap-fleet-node-1", "state": "running",
+             "ssh_host": "127.0.0.1", "ssh_port": 2201, "username": "admin", "password": None}
+        ],
         "namespaces": [],
     }
 
@@ -88,6 +93,73 @@ class DashboardUnitTests(unittest.TestCase):
     def setUp(self) -> None:
         self.catalog = dashboard.load_catalog(REPO_ROOT)
         self.addons = {addon["id"]: addon for addon in self.catalog["addons"]}
+
+    def test_fleet_terminal_runs_fixed_ssh_command_and_cleans_up(self) -> None:
+        popen = subprocess.Popen
+        commands: list[list[str]] = []
+
+        def spawn(command: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
+            commands.append(command)
+            return popen(
+                [sys.executable, "-u", "-c",
+                 "import sys; print('shell-ready'); print('received:' + sys.stdin.readline().strip())"],
+                **kwargs,
+            )
+
+        with patch.object(dashboard.subprocess, "Popen", side_effect=spawn):
+            terminal = dashboard.FleetTerminal(Path("/tmp/fleet fixture"), 2201)
+        try:
+            self.assertEqual(commands[0][-1], "admin@127.0.0.1")
+            self.assertIn("StrictHostKeyChecking=yes", commands[0])
+            self.assertNotIn("password", " ".join(commands[0]).lower())
+            output = bytearray()
+            deadline = time.monotonic() + 3
+            data = "hello-fleet\n"
+            while time.monotonic() < deadline:
+                result = terminal.exchange(data, 100, 30)
+                data = ""
+                output.extend(base64.b64decode(result["output"]))
+                if b"received:hello-fleet" in output:
+                    break
+                time.sleep(0.02)
+            self.assertIn(b"received:hello-fleet", output)
+        finally:
+            terminal.close()
+        self.assertIsNotNone(terminal.process.poll())
+        terminal.close()
+
+    def test_fleet_sessions_restrict_nodes_and_input(self) -> None:
+        app = dashboard.DashboardApp(REPO_ROOT, 0)
+        app.inventory = fixture_inventory
+        with self.assertRaisesRegex(RuntimeError, "missing or stopped"):
+            app.start_terminal(99)
+        with patch.object(Path, "is_file", return_value=True), \
+                patch.object(dashboard, "FleetTerminal") as factory:
+            factory.return_value.last_used = time.monotonic()
+            session_id = app.start_terminal(1)
+            self.assertEqual(factory.call_args.args[1], 2201)
+            with self.assertRaisesRegex(ValueError, "dimensions"):
+                app.terminal_io(session_id, {"cols": "100"})
+            with self.assertRaisesRegex(ValueError, "2048"):
+                app.terminal_io(session_id, {"data": "a" * 2049})
+            app.terminal_io(session_id, {"close": True})
+            factory.return_value.close.assert_called_once()
+            with self.assertRaisesRegex(RuntimeError, "expired"):
+                app.terminal_io(session_id, {})
+
+    def test_fleet_sessions_expire_and_are_bounded(self) -> None:
+        app = dashboard.DashboardApp(REPO_ROOT, 0)
+        app.inventory = fixture_inventory
+        with patch.object(Path, "is_file", return_value=True), \
+                patch.object(dashboard, "FleetTerminal") as factory:
+            factory.return_value.last_used = time.monotonic()
+            for _ in range(4):
+                app.start_terminal(1)
+            with self.assertRaisesRegex(RuntimeError, "four"):
+                app.start_terminal(1)
+            factory.return_value.last_used -= dashboard.TERMINAL_IDLE_SECONDS + 1
+            app.reap_terminals()
+            self.assertEqual(len(app.terminals), 0)
 
     def test_catalog_matches_public_cli_addons(self) -> None:
         cli = (REPO_ROOT / "aap-demo.sh").read_text(encoding="utf-8")
@@ -256,6 +328,25 @@ class DashboardHttpTests(unittest.TestCase):
         portal = next(addon for addon in payload["addons"] if addon["id"] == "portal")
         self.assertEqual(portal["projected_vm_disk_gib"], 170)
         self.assertEqual(portal["capacity_estimate"]["vm_gib"], 8)
+
+    def test_browser_terminal_requires_session_and_origin(self) -> None:
+        status, _ = self.request("/api/fleet/1/terminal", method="POST")
+        self.assertEqual(status, 403)
+        with patch.object(self.app, "start_terminal", return_value="a" * 32) as start:
+            status, payload = self.request(
+                "/api/fleet/1/terminal", method="POST",
+                token=self.app.session_token, origin=self.app.origin,
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["id"], "a" * 32)
+            start.assert_called_once_with(1)
+        status, _ = self.request("/api/terminals/" + "a" * 32 + "/io", method="POST")
+        self.assertEqual(status, 403)
+        status, _ = self.request(
+            "/api/terminals/" + "a" * 32 + "/io", method="POST",
+            token=self.app.session_token, origin=self.app.origin,
+        )
+        self.assertEqual(status, 409)
 
     def test_mutation_requires_origin_and_session_token(self) -> None:
         status, _ = self.request(

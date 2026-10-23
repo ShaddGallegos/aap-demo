@@ -82,7 +82,7 @@
       "id": "product-demos",
       "name": "Ansible Product Demos",
       "category": "Demo content",
-      "description": "Install the non-Satellite demo domains, templates, and content.",
+      "description": "Install the non-Satellite demo domains, templates, and content; reconcile existing Fleet nodes into the AAP Fleet inventory.",
       "dependencies": [],
       "health": {
         "type": "configured"
