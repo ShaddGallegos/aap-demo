@@ -87,7 +87,8 @@ All commands run in PowerShell. Run `aap-demo help` for the full list.
 | `aap-demo stop`                | Stop CRC cluster (saves a cold checkpoint when the service is on)  |
 | `aap-demo restart`             | Stop and start (managed: checkpoint, restore, start)               |
 | `aap-demo service ...`         | Cold checkpoint and logon restore service (see below)              |
-| `aap-demo status`              | Cluster health, namespaces, routes, admin password                 |
+| `aap-demo status`              | Cluster health, namespaces, routes, and addons; secrets hidden     |
+| `aap-demo status --show-secrets` | Reveal login credentials in an interactive terminal             |
 | `aap-demo diagnose`            | Environment health checks                                          |
 | `aap-demo watch`               | Monitor AAP deployment until Successful                            |
 | `aap-demo idle true` / `false` | Scale AAP down/up                                                  |
@@ -201,7 +202,8 @@ aap-demo create
 | Path                                         | Purpose                                     |
 | -------------------------------------------- | ------------------------------------------- |
 | `%USERPROFILE%\.aap-demo\config`             | Saved preset, addons, preferences           |
-| `%USERPROFILE%\.aap-demo\pull-secret.txt`    | Red Hat pull secret                         |
+| `%USERPROFILE%\.ansible\conf\env.yml`       | Encrypted retained credentials and pull secret |
+| `%USERPROFILE%\.ansible\conf\.vaultpass.txt` | Ansible Vault password                     |
 | `%USERPROFILE%\.aap-demo\crc-ingress-ca.crt` | MicroShift ingress CA (saved for TLS trust) |
 | `%USERPROFILE%\.crc\`                        | OpenShift Local VM data                     |
 | `%LOCALAPPDATA%\aap-demo\state\`              | State service config, checkpoints, logs     |

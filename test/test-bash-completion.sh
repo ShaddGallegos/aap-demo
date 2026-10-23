@@ -37,6 +37,7 @@ assert_completes product-demos aap-demo enable product
 assert_completes local-cache aap-demo disable local
 assert_completes keepalive aap-demo credentials ""
 assert_completes enable aap-demo credentials keepalive ""
+assert_completes setup aap-demo credentials keepalive se
 assert_completes run aap-demo credentials keepalive r
 assert_completes auth aap-demo fleet ""
 assert_completes register aap-demo fleet reg

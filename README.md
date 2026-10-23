@@ -6,14 +6,17 @@ Deploy AAP to a local MicroShift cluster in minutes.
 
 **aap-demo is a LOCAL DEVELOPMENT tool and must NEVER be used in production.**
 
+For planned architectural, reliability, testing, platform, and release improvements,
+see the [project roadmap](docs/ROADMAP.md).
+
 ## Choose your platform
 
 | Host | Installation, configuration, and daily use |
 |------|--------------------------------------------|
-| RHEL / Fedora | [Linux quickstart](Linux_Quickstart.md) |
-| macOS (Intel / Apple Silicon) | [macOS quickstart](MAC_Quickstart.md) |
-| Windows / Hyper-V | [Windows quickstart](Windows_Quickstart.md) |
-| WSL terminal, Windows-hosted CRC | [WSL quickstart](WSL_Quickstart.md) |
+| RHEL / Fedora | [Linux quickstart](docs/Linux_Quickstart.md) |
+| macOS (Intel / Apple Silicon) | [macOS quickstart](docs/MAC_Quickstart.md) |
+| Windows / Hyper-V | [Windows quickstart](docs/Windows_Quickstart.md) |
+| WSL terminal, Windows-hosted CRC | [WSL quickstart](docs/WSL_Quickstart.md) |
 
 Linux/macOS use the Bash CLI; Windows uses the native PowerShell CLI. WSL
 should invoke that Windows CLI instead of creating a second CRC installation.
@@ -34,6 +37,31 @@ those hosts; hermetic tests and CI checks are not equivalent to live recovery.
 See [state recovery](docs/state-service.md) for retention, credentials and rollback
 semantics. The Linux bootstrap below is **not** a macOS/Windows/WSL installer.
 
+## Portability and repeat-run contract
+
+- Running the same create, deploy, enable, start, wire, or full-demo workflow
+  again converges existing resources instead of intentionally duplicating them.
+  Kubernetes namespaces and managed secrets use apply-style updates, and saved
+  addon/configuration keys are replaced rather than appended repeatedly.
+- Bash state defaults to `~/.aap-demo`, with persistent settings at
+  `~/.aap-demo/config`. Set `AAP_DEMO_DIR` and `AAP_DEMO_CONFIG` to relocate
+  them; those values are exported to addon processes. Set `NAMESPACE`,
+  `KUBECONFIG`, or `AAP_DEMO_KUBECONFIG` to select non-default cluster targets.
+- Interactive runs may prompt for credentials and capacity. `QUIET=true` is the
+  unattended/CI contract: required missing input fails with setup guidance
+  rather than prompting or silently selecting invalid data.
+- Linux and macOS use Bash; native Windows uses PowerShell, and WSL uses the
+  Windows wrapper. CPU-specific images are selected for `x86_64`/`amd64` and
+  `arm64`/`aarch64` where the addon supports both. An addon that lacks an image
+  or host implementation for the detected platform fails explicitly.
+- CRC-owned files remain under CRC's own `~/.crc` layout. Linux systemd recovery
+  deliberately supports only the default state paths because it must run
+  outside an interactive shell; custom state paths remain supported for normal
+  CLI and addon workflows.
+- Idempotency means a completed operation is safe to repeat. Interrupted remote
+  API operations can still require another run after connectivity returns; the
+  CLI surfaces those failures instead of reporting success.
+
 ## Prerequisites
 
 - **CRC (OpenShift Local)** — [Download](https://console.redhat.com/openshift/create/local)
@@ -44,7 +72,11 @@ semantics. The Linux bootstrap below is **not** a macOS/Windows/WSL installer.
 - **Pull secret** — download from the
   [Red Hat console](https://console.redhat.com/openshift/install/pull-secret).
   Setup imports it into encrypted `~/.ansible/conf/env.yml`; remove the original
-  download after import.
+  download after import. If a valid Customer Portal offline token is already in
+  the Vault, `aap-demo create` can retrieve a fresh pull secret from Red Hat's
+  official API and save it directly to the encrypted Vault. See Red Hat
+  Solution [4844461](https://access.redhat.com/solutions/4844461) for the
+  supported REST automation workflow.
 
 ## Install
 
@@ -62,7 +94,9 @@ Automation Orchestrator. It automatically imports `~/Downloads/pull-secret.txt`;
 `--pull-secret /path/to/pull-secret.txt` when the download is elsewhere. Optional APME
 GitHub integration can be configured later.
 
-For AAP without the addon suite, use `./install.sh && aap-demo deploy`.
+For AAP without the addon suite, run `./install.sh`, then start a new shell (or
+`source ~/.bashrc` on Bash) and run `aap-demo deploy`. The installer manages
+`~/.local/bin` in Bash PATH and installs Bash completion idempotently.
 
 `aap-demo create` provisions the MicroShift VM only. `aap-demo deploy` installs OLM and AAP
 (use `deploy` for the typical path; `create` alone is for cluster-only setup).
@@ -197,12 +231,14 @@ Automation Orchestrator, then enables Fleet, attaches the AAP subscription, and
 reconciles three started and registered RHEL 9 nodes. Product Demos is installed
 after licensing succeeds. A final strict `aap-demo wire` runs after all
 components are present, then the dashboard launches. Fleet image download
-and AAP subscription attachment require configured Red Hat credentials. Run
-`aap-demo fleet auth` once before the full demo. If the Automation Hub token is
-not configured, setup-pah prompts for that distinct token. Customer Portal and
-Automation Hub tokens remain separate in encrypted storage. Reruns reuse
-existing Fleet nodes instead of creating duplicates. Use `--no-open` to run the
-dashboard without opening a browser.
+and AAP subscription attachment require Red Hat credentials. Full-demo checks
+them first and starts the secure `fleet auth` prompts when they are missing or
+invalid. Runs with `QUIET=true` remain noninteractive and require credentials to
+be configured in advance. If the Automation Hub token is not configured,
+setup-pah prompts for that distinct token. Customer Portal and Automation Hub
+tokens remain separate in encrypted storage. Reruns reuse existing Fleet nodes
+instead of creating duplicates. Use `--no-open` to run the dashboard without
+opening a browser.
 
 ### Dashboard
 
@@ -211,9 +247,10 @@ returns to your terminal after its HTTP listener is ready. It opens your browser
 unless you pass `--no-open`. Running the command again reuses the dashboard for
 this checkout rather than starting a duplicate.
 
-The Environment Overview shows the host OS and, when available, the CRC guest OS.
-The small **Restart dashboard** button reloads the dashboard server and reconnects
-the page without restarting CRC, AAP or Fleet. Restart is blocked during an active
+The Environment Overview shows the host OS, the CRC guest OS when available,
+and the AAP subscription selected during automatic licensing. The small
+**Restart dashboard** button reloads the dashboard server and reconnects the
+page without restarting CRC, AAP or Fleet. Restart is blocked during an active
 dashboard add-on operation.
 
 The default address is `http://127.0.0.1:8765`; set `AAP_DEMO_DASHBOARD_PORT`
@@ -278,23 +315,41 @@ journals older than seven days and reports the VM disk space reclaimed.
 `maintenance uninstall --apply` requires typing `UNINSTALL` and removes the CRC
 cluster, Fleet VMs and images, CRC downloads, generated credentials and caches,
 temporary swap, ingress trust entries, MCP/shell integration, CLI symlink, and
-completions. It preserves the source repository and encrypted credential Vault. For
-noninteractive use, also set `AAP_DEMO_UNINSTALL_CONFIRM=UNINSTALL`.
+completions. It also stops the dashboard, removes recovery services and backups,
+deletes `~/.aap-demo`, and removes the `aap_demo` namespace from the encrypted
+credential Vault. If no unrelated Vault data remains, it removes the Vault
+file, but always preserves the shared Vault password file. The source
+repository, shared command-line tools/packages,
+unrelated Vault keys, and libvirt group membership are preserved. For noninteractive
+use, also set `AAP_DEMO_UNINSTALL_CONFIRM=UNINSTALL`.
 
 ## Credential storage
 
-aap-demo stores retained passwords and tokens under the `aap_demo` namespace in
-the Ansible Vault-encrypted `~/.ansible/conf/env.yml`. The Vault password file is
-`~/.ansible/conf/.vaultpass.txt`. Existing YAML keys outside `aap_demo` are
-preserved, and older aap-demo Vault files are merged automatically. The
-password file is generated automatically when absent. The directory is mode
-`0700` and both files are mode `0600`.
+aap-demo stores retained passwords and tokens under the `aap_demo` namespace
+and the `ah_offline_token` key in Ansible Vault-encrypted
+`~/.ansible/conf/env.yml`. The Vault password file is
+`~/.ansible/conf/.vaultpass.txt`. Unrelated YAML keys are preserved, and older
+aap-demo Vault files are merged automatically. A password file is generated
+automatically for a new Vault only. The directory is mode
+`0700` and both files are mode `0600`. Existing password contents are never
+replaced, and uninstall preserves the shared password for other products.
 
 Status, watch, deploy, and generated system-information output hide secrets by
 default. Use `aap-demo status --show-secrets` only in an interactive terminal.
+This prints available AAP and addon login passwords without writing them to a
+file; redirected use is rejected.
 Keeping the encrypted Vault and its password in the same user-only directory
 prevents accidental Git disclosure, but it does not protect against compromise
 of the user account.
+
+The Customer Portal offline token from
+`https://access.redhat.com/management/api` is stored as
+`aap_demo.redhat.offline_token` and is used for entitlements, Fleet downloads,
+and AAP licensing. The distinct Automation Hub token from
+`https://console.redhat.com/ansible/automation-hub/token` is stored as
+`ah_offline_token` and is used for collection synchronization (the older
+`aap_demo.galaxy.offline_token` key remains readable).
+The tokens are validated and maintained separately.
 
 ### Offline-token keepalive
 
@@ -303,6 +358,7 @@ daily keepalive after configuring Fleet or Automation Hub credentials:
 
 ```bash
 aap-demo credentials keepalive enable
+aap-demo credentials keepalive setup    # Validate/store Hub token and install four-day cron
 aap-demo credentials keepalive status
 aap-demo credentials keepalive run      # one-shot validation
 aap-demo credentials keepalive disable
@@ -313,6 +369,10 @@ configured token for a short-lived access token, and immediately discards the
 result. It never stores or logs token values. Linux uses a persistent systemd
 user timer; macOS uses a LaunchAgent. A rejected token can trigger a desktop
 notification, while temporary network failures are logged for the next retry.
+The `setup` action is an alternative Hub-only cron workflow using `0 0 */4 * *`.
+It reuses a valid stored token and securely re-prompts for missing or rejected
+tokens. See [collection authentication](docs/collection-authentication.md)
+for Vault-password configuration and cron timing details.
 
 ## Architecture
 
@@ -361,6 +421,8 @@ aap-demo destroy       # Delete everything
 ## Documentation
 
 - **[Full README](docs/FULL-README.md)** — Complete documentation, architecture, troubleshooting
+- **[Changelog](CHANGELOG.md)** — Successful changes since the original 1.0.48 baseline
+- **[Roadmap](ROADMAP.md)** — Prioritized project evolution and measurable milestones
 - **[Architecture Decision Records](docs/adr/)** — Design decisions and rationale
 - **[Contributing](docs/CONTRIBUTING.md)** — Development guidelines
 - **[Linting](docs/LINTING.md)** — Ansible linting setup

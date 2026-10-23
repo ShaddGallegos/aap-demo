@@ -27,6 +27,13 @@ cmd_enable() {
 
 cmd_fleet() {
   printf 'fleet %s\n' "$*" >>"$LOG_FILE"
+  if [ "${1:-}" = auth ] && [ "${2:-}" = status ] \
+    && [ "${FLEET_AUTH_CONFIGURED:-true}" != true ]; then
+    return 1
+  fi
+  if [ "${1:-}" = auth ] && [ "${2:-}" = configure ]; then
+    FLEET_AUTH_CONFIGURED=true
+  fi
 }
 
 cmd_credentials() {
@@ -109,6 +116,28 @@ if grep -Fq 'create quiet=' "$LOG_FILE"; then
 fi
 grep -Fq 'deploy skip_ao=true' "$LOG_FILE"
 
+# shellcheck disable=SC2329
+infra_get_state() {
+  printf 'not_created'
+}
+FLEET_AUTH_CONFIGURED=false
+prompt_device=$(mktemp)
+: >"$LOG_FILE"
+AAP_DEMO_SECRET_PROMPT_DEVICE="$prompt_device" cmd_full_demo >/dev/null
+cat >"$LOG_FILE.auth.expected" <<'EOF'
+fleet auth status
+fleet auth configure
+fleet auth status
+create quiet=true addons=mcp-server,setup-pah,product-demos,ollama,ao,fleet
+EOF
+if ! head -4 "$LOG_FILE" | cmp -s - "$LOG_FILE.auth.expected"; then
+  echo "FAIL: full demo did not configure missing Fleet credentials first"
+  diff -u "$LOG_FILE.auth.expected" <(head -4 "$LOG_FILE") || true
+  rm -f "$LOG_FILE.auth.expected" "$prompt_device"
+  exit 1
+fi
+rm -f "$LOG_FILE.auth.expected" "$prompt_device"
+
 if QUIET=true "$AAP_DEMO_SH" status --full-demo >/tmp/aap-demo-full-demo-error 2>&1; then
   echo "FAIL: --full-demo was accepted outside create"
   rm -f /tmp/aap-demo-full-demo-error
@@ -124,7 +153,7 @@ if HOME="$unconfigured_home" QUIET=true AAP_DEMO_DISABLE_LOCK=true \
   rm -rf "$unconfigured_home"
   exit 1
 fi
-grep -Fq 'Full demo requires valid Red Hat Fleet download credentials' "$unconfigured_home/output"
+grep -Fq 'Full demo cannot prompt for credentials with QUIET=true' "$unconfigured_home/output"
 if grep -Fq 'failed unexpectedly' "$unconfigured_home/output"; then
   echo "FAIL: expected full-demo preflight failure was reported as an internal error"
   rm -rf "$unconfigured_home"
@@ -132,4 +161,4 @@ if grep -Fq 'failed unexpectedly' "$unconfigured_home/output"; then
 fi
 rm -rf "$unconfigured_home"
 
-echo "PASS: create --full-demo uses the required fail-fast orchestration order"
+echo "PASS: create --full-demo bootstraps credentials and uses the required fail-fast order"

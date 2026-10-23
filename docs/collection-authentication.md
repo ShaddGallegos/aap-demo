@@ -36,9 +36,99 @@ Customer Portal API does not provide an endpoint that can generate it.
    aap-demo enable setup-pah
    ```
 
-   The token is stored under the `aap_demo` namespace in the encrypted
+   The token is stored as `ah_offline_token` in the encrypted
    `~/.ansible/conf/env.yml` Vault. Its password file is
    `~/.ansible/conf/.vaultpass.txt`.
+
+### Automated validation, storage, and four-day cron
+
+Run this on the host as the user who owns the Vault (no cluster is required):
+
+```bash
+aap-demo credentials keepalive setup
+```
+
+The command:
+
+1. Reads the encrypted Vault without printing its contents and checks
+   `ah_offline_token`. The older `aap_demo.galaxy.offline_token` key is also
+   accepted; subsequent token updates use `ah_offline_token`.
+2. Validates the token with a POST to Red Hat SSO using
+   `grant_type=refresh_token` and `client_id=cloud-services`. Both HTTP 200 and
+   a nonempty JSON `access_token` are required.
+3. Reuses a valid stored token without prompting or rewriting the Vault.
+   Missing, expired, or revoked tokens trigger a hidden prompt. Empty or
+   rejected entries are retried and are never saved.
+4. Stops on decryption errors, network failures, server errors, or malformed
+   SSO responses. It does not replace credentials merely because validation
+   could not complete. Resolve the error and rerun the command.
+5. Encrypts token updates with `ansible-vault`, preserving unrelated YAML
+   secrets. The Vault directory is mode `0700`; the Vault and password file
+   are mode `0600`.
+6. Installs or updates one marked entry in the current user's crontab, preserving
+   unrelated jobs. Install `crontab` and enable the host's cron service first.
+
+The schedule is **`0 0 */4 * *`** (midnight on days 1, 5, 9, etc., in cron's
+configured timezone). This matches the requested four-day cron expression,
+but is not an exact 96-hour interval across month boundaries. Cron does not
+catch up on missed runs when the host is off.
+
+The cron command invokes
+[`scripts/aap-demo-token-keepalive.sh`](../scripts/aap-demo-token-keepalive.sh)
+with `run-hub`, capturing the configured Vault, password-file, and tool paths.
+It reads the current token at every run, so rotation requires no cron update.
+The token is sent to curl over standard input with
+`--data-urlencode refresh_token@-`, not embedded in the crontab or curl's
+process arguments. Responses and short-lived access tokens are discarded;
+only secret-free status/error messages are written to cron output/mail.
+
+```bash
+aap-demo credentials keepalive status
+bash scripts/aap-demo-token-keepalive.sh run-hub  # Check Hub only
+aap-demo credentials keepalive disable           # Remove managed schedules
+```
+
+`setup` adds the Hub cron job; it does not remove an existing daily systemd or
+LaunchAgent schedule. To switch instead of running both, first run
+`aap-demo credentials keepalive disable`, then `setup`. The existing `enable`
+action remains available for daily checks of both Customer Portal and Hub
+tokens. Neither keepalive can renew a revoked token; rerun `setup` to replace it.
+
+### Supplying the Vault password
+
+Prerequisites are Bash, curl, `ansible-vault`, and Python 3 with PyYAML.
+The automation passes `--vault-password-file` to `ansible-vault`. By default it
+uses `~/.ansible/conf/.vaultpass.txt`. For a new Vault only, a cryptographically
+random password file is created automatically. An existing Vault with a
+missing or incorrect password causes an error; its password is never replaced.
+An existing shared password file is reused without changing its contents and
+is preserved during uninstall, even if no Vault remains. An empty or unusable
+password file causes an error rather than being overwritten.
+
+The shared default is:
+
+```bash
+export AAP_DEMO_VAULT_PASSWORD_FILE="$HOME/.ansible/conf/.vaultpass.txt"
+export AAP_DEMO_VAULT_FILE="$HOME/.ansible/conf/env.yml"
+chmod 600 "$AAP_DEMO_VAULT_PASSWORD_FILE"
+aap-demo credentials keepalive setup
+```
+
+Use absolute paths. Keep the password file available for unattended cron runs.
+Do not pass the password or token as CLI arguments or paste them into chat.
+Tool paths may also be selected with `AAP_DEMO_ANSIBLE_VAULT` and
+`AAP_DEMO_VAULT_PYTHON` when using a virtual environment.
+
+For interactive manual inspection, Ansible can prompt for the Vault password:
+
+```bash
+ansible-vault view --ask-vault-pass "$HOME/.ansible/conf/env.yml"
+```
+
+That command displays secrets: use it only in a private terminal. A password
+prompt cannot be used by unattended cron; supply the password file instead.
+The token itself is prompted for only when needed and remains hidden. Do not
+run credential setup with shell tracing (`bash -x`) enabled.
 
 ### Token Scope
 
@@ -287,8 +377,9 @@ SKIP_COLLECTIONS=true aap-demo deploy
 
 ## Security Considerations
 
-**Token Storage**: Tokens and PAH credentials are stored under `aap_demo` in
-Ansible Vault-encrypted `~/.ansible/conf/env.yml`. The password file is
+**Token Storage**: The Hub token is stored as `ah_offline_token`; other managed
+credentials remain under `aap_demo` in Ansible Vault-encrypted
+`~/.ansible/conf/env.yml`. The password file is
 `~/.ansible/conf/.vaultpass.txt`:
 
 ```bash
@@ -296,11 +387,18 @@ chmod 700 ~/.ansible/conf
 chmod 600 ~/.ansible/conf/env.yml ~/.ansible/conf/.vaultpass.txt
 ```
 
-**Token Rotation**: Offline tokens don't expire automatically, but should be rotated periodically:
+**Token Rotation**: Offline tokens can expire after 30 days without use and
+should be rotated when rejected:
 
-1. Generate new token from console.redhat.com
+1. Generate a new Automation Hub token from
+   `https://console.redhat.com/ansible/automation-hub/token`
 2. Run `aap-demo enable setup-pah` and paste the replacement at the hidden prompt
 3. No redeployment needed — new collections will use new token
+
+Use `aap-demo credentials keepalive enable` to validate the separate Customer
+Portal and Automation Hub tokens daily without storing short-lived access
+tokens, or `aap-demo credentials keepalive setup` for the Hub-only four-day
+cron workflow described above.
 
 Co-locating the encrypted Vault and password prevents accidental publication,
 but does not protect against compromise of the local user account.

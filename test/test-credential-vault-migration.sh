@@ -72,4 +72,53 @@ source "${REPO_ROOT}/includes/credential-vault.sh"
 [ "$AAP_DEMO_ANSIBLE_VAULT" != "$HOME/venv/bin/ansible-vault" ]
 EOF
 
-echo "PASS: merges legacy credentials into shared Vault"
+HOME="$TEST_HOME" REPO_ROOT="$REPO_ROOT" bash <<'EOF'
+set -euo pipefail
+_err() { printf 'ERROR: %s\n' "$*" >&2; }
+source "${REPO_ROOT}/includes/credential-vault.sh"
+aap_demo_vault_remove_managed
+[ -f "$HOME/.ansible/conf/env.yml" ]
+[ -f "$HOME/.ansible/conf/.vaultpass.txt" ]
+ansible-vault view --vault-password-file "$HOME/.ansible/conf/.vaultpass.txt" \
+  "$HOME/.ansible/conf/env.yml" |
+  python3 -c '
+import sys
+import yaml
+data = yaml.safe_load(sys.stdin) or {}
+assert data.get("existing_setting") == "keep-me"
+assert "aap_demo" not in data
+'
+EOF
+
+ONLY_HOME=$(mktemp -d)
+HOME="$ONLY_HOME" REPO_ROOT="$REPO_ROOT" bash <<'EOF'
+set -euo pipefail
+_err() { printf 'ERROR: %s\n' "$*" >&2; }
+source "${REPO_ROOT}/includes/credential-vault.sh"
+aap_demo_vault_set "aap_demo.redhat.offline_token" "managed-only"
+cp "$AAP_DEMO_VAULT_PASSWORD_FILE" "$HOME/password-before"
+aap_demo_vault_set "aap_demo.redhat.offline_token" "updated"
+cmp "$AAP_DEMO_VAULT_PASSWORD_FILE" "$HOME/password-before"
+aap_demo_vault_remove_managed
+[ ! -e "$HOME/.ansible/conf/env.yml" ]
+cmp "$AAP_DEMO_VAULT_PASSWORD_FILE" "$HOME/password-before"
+mkdir -p "$HOME/.ansible/conf"
+printf 'orphaned-password\n' >"$HOME/.ansible/conf/.vaultpass.txt"
+aap_demo_vault_remove_managed
+[ "$(cat "$AAP_DEMO_VAULT_PASSWORD_FILE")" = orphaned-password ]
+aap_demo_vault_set "aap_demo.redhat.offline_token" "new-vault"
+[ "$(cat "$AAP_DEMO_VAULT_PASSWORD_FILE")" = orphaned-password ]
+[ "$(aap_demo_vault_get "aap_demo.redhat.offline_token")" = new-vault ]
+aap_demo_vault_remove_managed
+: >"$AAP_DEMO_VAULT_PASSWORD_FILE"
+if aap_demo_vault_set "aap_demo.redhat.offline_token" "must-not-save"; then
+  echo "FAIL: an existing empty shared password file was accepted" >&2
+  exit 1
+fi
+[ -e "$AAP_DEMO_VAULT_PASSWORD_FILE" ]
+[ ! -s "$AAP_DEMO_VAULT_PASSWORD_FILE" ]
+[ ! -e "$AAP_DEMO_VAULT_FILE" ]
+EOF
+rm -rf -- "$ONLY_HOME"
+
+echo "PASS: merges and removes managed credentials without changing unrelated Vault data"

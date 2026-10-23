@@ -16,7 +16,8 @@ and are checked in under [`manifests/`](manifests/). `deploy.sh` applies them wi
 
 ```bash
 aap-demo deploy          # AAP + OLM + AO; prompts for the AO LLM provider
-aap-demo status          # route URL + admin password when ready
+aap-demo status          # route URL and health; credentials remain hidden
+aap-demo status --show-secrets # reveal the admin password interactively
 ```
 
 During an interactive `deploy` or `enable ao`, choose one of these LLM provider paths:
@@ -143,7 +144,7 @@ and `credential_id`; that message is expected before both are chosen on the node
 |-------------|-------|
 | `aap-demo deploy` | Installs OLM and `redhat-operators` CatalogSource in `aap-operator` |
 | `mcp-server` addon | Installed automatically by `aap-demo enable ao`; required for AO MCP integration wiring |
-| Pull secret | `registry.redhat.io` access (`~/.aap-demo/pull-secret.txt`) |
+| Pull secret | `registry.redhat.io` access from `aap_demo.redhat.pull_secret` in the encrypted Vault |
 | Operator in index | `automation-orchestrator-operator` in `redhat-operator-index` v4.18+; automatic fallback index if missing |
 | StorageClass | Auto-detected: `nfs-local-rwx` or `topolvm-provisioner` |
 
@@ -358,8 +359,9 @@ Image pull secret "automation-orchestrator-pull-secret" must be of type
 kubernetes.io/dockerconfigjson, got Opaque
 ```
 
-`aap-demo enable ao` now creates `automation-orchestrator-pull-secret` from
-`~/.aap-demo/pull-secret.txt`. To repair a stuck instance without a full reinstall:
+`aap-demo enable ao` creates `automation-orchestrator-pull-secret` from
+`aap_demo.redhat.pull_secret` in encrypted `~/.ansible/conf/env.yml`. To repair
+a stuck instance without a full reinstall:
 
 ```bash
 kubectl delete secret automation-orchestrator-pull-secret -n automation-orchestrator

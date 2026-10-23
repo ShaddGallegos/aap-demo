@@ -41,9 +41,9 @@ export KUBECONFIG="$KUBECONFIG_PATH"
 
 NAMESPACE="automation-orchestrator"
 AAP_NAMESPACE="${AAP_DEMO_NAMESPACE:-aap-operator}"
-AO_STATE_FILE="${AO_STATE_FILE:-$HOME/.aap-demo/ao-state}"
-if [ ! -f "$AO_STATE_FILE" ] && [ -f "$HOME/.aap-demo/ao-eap-state" ]; then
-  AO_STATE_FILE="$HOME/.aap-demo/ao-eap-state"
+AO_STATE_FILE="${AO_STATE_FILE:-${AAP_DEMO_DIR:-$HOME/.aap-demo}/ao-state}"
+if [ ! -f "$AO_STATE_FILE" ] && [ -f "${AAP_DEMO_DIR:-$HOME/.aap-demo}/ao-eap-state" ]; then
+  AO_STATE_FILE="${AAP_DEMO_DIR:-$HOME/.aap-demo}/ao-eap-state"
 fi
 MANIFESTS_DIR="${SCRIPT_DIR}/manifests"
 REPO_ROOT="${SCRIPT_DIR}/../.."
@@ -1267,7 +1267,7 @@ ao_ensure_mcp_server() {
   fi
   echo "Installing required mcp-server addon..."
   bash "${REPO_ROOT}/addons/mcp-server/deploy.sh"
-  local config="${HOME}/.aap-demo/config"
+  local config="${AAP_DEMO_CONFIG:-${AAP_DEMO_DIR:-$HOME/.aap-demo}/config}"
   local current
   if [ -f "$config" ]; then
     current=$(grep '^ADDONS=' "$config" 2>/dev/null | cut -d= -f2 | tr ',' ' ')
@@ -1384,7 +1384,7 @@ fi
 
 # --- Namespace + SCCs ---
 echo "Creating namespace and SCC grants..."
-kubectl create namespace "$NAMESPACE" 2>/dev/null || true
+kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 if ! grant_scc_to_serviceaccount anyuid default "$NAMESPACE"; then
   exit 1
 fi

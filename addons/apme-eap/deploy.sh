@@ -11,9 +11,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../includes/aap-demo-paths.sh"
 ACTION="${1:-deploy}"
 NAMESPACE="apme"
-VARS_FILE="$HOME/.aap-demo/apme-eap-vars.yml"
-GITHUB_CREDS_FILE="$HOME/.aap-demo/apme-eap-github-creds.yml"
-VENV_DIR="$HOME/.aap-demo/apme-eap-venv"
+VARS_FILE="${AAP_DEMO_DIR:-$HOME/.aap-demo}/apme-eap-vars.yml"
+GITHUB_CREDS_FILE="${AAP_DEMO_DIR:-$HOME/.aap-demo}/apme-eap-github-creds.yml"
+VENV_DIR="${AAP_DEMO_DIR:-$HOME/.aap-demo}/apme-eap-venv"
 
 # Color output
 RED='\033[0;31m'
@@ -508,9 +508,9 @@ prompt_github_token() {
   info "4. GitHub App Private Key"
   info "   Location: General → Private keys → Generate/download .pem file"
   info "   (If you don't have one, click 'Generate a private key' - file will download)"
-  info "   Move the downloaded .pem file to: $HOME/.aap-demo/apme-github-app.pem"
+  info "   Move the downloaded .pem file to: ${AAP_DEMO_DIR:-$HOME/.aap-demo}/apme-github-app.pem"
   read -r -p "   Private key path [~/.aap-demo/apme-github-app.pem]: " github_app_private_key_input
-  github_app_private_key_input="${github_app_private_key_input:-$HOME/.aap-demo/apme-github-app.pem}"
+  github_app_private_key_input="${github_app_private_key_input:-${AAP_DEMO_DIR:-$HOME/.aap-demo}/apme-github-app.pem}"
 
   # Expand ~ to full path
   github_app_private_key_input="${github_app_private_key_input/#\~/$HOME}"
@@ -796,7 +796,7 @@ show_routes() {
 # ---------------------------------------------------------------------------
 
 _purge_apme_local_credentials() {
-  local key_path="${GITHUB_APP_PRIVATE_KEY_PATH:-$HOME/.aap-demo/apme-github-app.pem}"
+  local key_path="${GITHUB_APP_PRIVATE_KEY_PATH:-${AAP_DEMO_DIR:-$HOME/.aap-demo}/apme-github-app.pem}"
 
   if [ -f "$GITHUB_CREDS_FILE" ]; then
     rm -f "$GITHUB_CREDS_FILE"

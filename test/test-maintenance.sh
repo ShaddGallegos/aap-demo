@@ -78,11 +78,20 @@ mkdir -p \
   "$uninstall_home/.aap-demo/fleet" \
   "$uninstall_home/.crc/cache" \
   "$uninstall_home/.crc/machines/crc" \
+  "$uninstall_home/system/etc/aap-demo" \
+  "$uninstall_home/system/libexec" \
+  "$uninstall_home/system/var/aap-demo/$(id -un)/states/state-1" \
   "$uninstall_home/.local/bin" \
   "$uninstall_home/.local/share/bash-completion/completions"
 printf 'pull-secret\n' >"$uninstall_home/.aap-demo/pull-secret.txt"
 printf 'generated-credential\n' >"$uninstall_home/.aap-demo/generated-credential"
 printf 'bundle\n' >"$uninstall_home/.crc/cache/bundle"
+printf '%s\n' "$(id -un)" >"$uninstall_home/system/etc/aap-demo/owner"
+touch \
+  "$uninstall_home/system/aap-demo.service" \
+  "$uninstall_home/system/libexec/aap-demo-state" \
+  "$uninstall_home/system/libexec/aap-demo-operation-lock.sh" \
+  "$uninstall_home/system/var/aap-demo/$(id -un)/states/state-1/COMPLETE"
 ln -s "$AAP_DEMO_SH" "$uninstall_home/.local/bin/aap-demo"
 # shellcheck disable=SC2016
 printf '%s\n' \
@@ -116,15 +125,28 @@ cat >"$mock_dir/podman" <<EOF
 #!/usr/bin/env bash
 echo "podman \$*" >>"$mock_dir/uninstall.log"
 EOF
-chmod +x "$mock_dir/crc" "$mock_dir/claude" "$mock_dir/podman"
+cat >"$mock_dir/systemctl" <<EOF
+#!/usr/bin/env bash
+echo "systemctl \$*" >>"$mock_dir/uninstall.log"
+EOF
+chmod +x "$mock_dir/crc" "$mock_dir/claude" "$mock_dir/podman" "$mock_dir/systemctl"
 
 # shellcheck disable=SC2031
 HOME="$uninstall_home" PATH="$mock_dir:$PATH" QUIET=true \
-  AAP_DEMO_UNINSTALL_CONFIRM=UNINSTALL bash -c '
+  AAP_DEMO_UNINSTALL_CONFIRM=UNINSTALL \
+  AAP_DEMO_SYSTEMD_UNIT_FILE="$uninstall_home/system/aap-demo.service" \
+  AAP_DEMO_SYSTEM_CONFIG_DIR="$uninstall_home/system/etc/aap-demo" \
+  AAP_DEMO_SYSTEM_LIBEXEC_DIR="$uninstall_home/system/libexec" \
+  AAP_DEMO_STATE_BACKUP_DIR="$uninstall_home/system/var/aap-demo/$(id -un)" \
+  bash -c '
     set -euo pipefail
     SCRIPT_DIR=$1
     source "$SCRIPT_DIR/includes/persistent-crio-store.sh"
     source "$SCRIPT_DIR/includes/maintenance.sh"
+    _maintenance_stop_dashboard() { return 0; }
+    _maintenance_remove_managed_credentials() {
+      touch "$HOME/managed-credentials-removed"
+    }
     _purge_ingress_ca_trust() { return 0; }
     _remove_temp_swap() { return 0; }
     cmd_maintenance uninstall true
@@ -133,7 +155,14 @@ HOME="$uninstall_home" PATH="$mock_dir:$PATH" QUIET=true \
 [ ! -e "$uninstall_home/.aap-demo/pull-secret.txt" ]
 [ ! -e "$uninstall_home/.aap-demo/generated-credential" ]
 [ ! -e "$uninstall_home/.aap-demo/fleet" ]
+[ ! -e "$uninstall_home/.aap-demo" ]
 [ ! -e "$uninstall_home/.crc" ]
+[ ! -e "$uninstall_home/system/aap-demo.service" ]
+[ ! -e "$uninstall_home/system/etc/aap-demo" ]
+[ ! -e "$uninstall_home/system/libexec/aap-demo-state" ]
+[ ! -e "$uninstall_home/system/libexec/aap-demo-operation-lock.sh" ]
+[ ! -e "$uninstall_home/system/var/aap-demo/$(id -un)" ]
+[ -e "$uninstall_home/managed-credentials-removed" ]
 [ ! -e "$uninstall_home/.local/bin/aap-demo" ]
 if grep -q '^# >>> aap-demo bash completion >>>$' "$uninstall_home/.bashrc"; then
   echo "FAIL: uninstall left the Bash completion loader behind"
@@ -150,6 +179,8 @@ fi
 grep -Fq 'crc delete -f' "$mock_dir/uninstall.log"
 grep -Fq 'crc cleanup' "$mock_dir/uninstall.log"
 grep -Fq 'claude mcp remove aap-demo --scope user' "$mock_dir/uninstall.log"
+grep -Fq 'systemctl disable --now aap-demo.service' "$mock_dir/uninstall.log"
+grep -Fq 'systemctl daemon-reload' "$mock_dir/uninstall.log"
 
 HOME="$uninstall_home" SHELL=/bin/bash bash "${SCRIPT_DIR}/../install.sh" >/dev/null
 [ -L "$uninstall_home/.local/bin/aap-demo" ]

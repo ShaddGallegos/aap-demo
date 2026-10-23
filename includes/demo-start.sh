@@ -165,7 +165,7 @@ aap_demo_resume_demo() {
     aap_demo_start_namespace "$namespace" || return 1
   done
 
-  if [[ " $addons " == *" fleet "* ]] && [ -d "${HOME}/.aap-demo/fleet" ]; then
+  if [[ " $addons " == *" fleet "* ]] && [ -d "${AAP_DEMO_DIR:-$HOME/.aap-demo}/fleet" ]; then
     # shellcheck source=../addons/fleet/fleet.sh
     source "${SCRIPT_DIR}/addons/fleet/fleet.sh"
     echo "Starting preserved Fleet nodes..."

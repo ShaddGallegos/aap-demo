@@ -122,7 +122,7 @@ fleet_redhat_store_project_metadata() {
   local preset cluster_name kubeconfig
   preset="${CRC_PRESET:-microshift}"
   cluster_name="${AAP_DEMO_CLUSTER_NAME:-crc-${preset}}"
-  kubeconfig="${KUBECTL_KUBECONFIG:-$HOME/.aap-demo/kubeconfig.microshift}"
+  kubeconfig="${KUBECTL_KUBECONFIG:-${AAP_DEMO_KUBECONFIG:-${AAP_DEMO_DIR:-$HOME/.aap-demo}/kubeconfig.microshift}}"
   aap_demo_vault_set "aap_demo.project.name" "aap-demo" || return 1
   aap_demo_vault_set "aap_demo.cluster.name" "$cluster_name" || return 1
   aap_demo_vault_set "aap_demo.cluster.provider" "${INFRA_TYPE:-crc}" || return 1

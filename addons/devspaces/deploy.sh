@@ -52,7 +52,7 @@ fi
 echo "Deploying OpenShift DevSpaces..."
 
 # Create namespace
-kubectl create namespace "$NAMESPACE" 2>/dev/null || true
+kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 kubectl label namespace "$NAMESPACE" \
   pod-security.kubernetes.io/enforce=privileged \
   pod-security.kubernetes.io/audit=privileged \

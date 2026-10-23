@@ -7,7 +7,7 @@ if [ -n "${_FLEET_LOADED:-}" ]; then return 0; fi
 _FLEET_LOADED=1
 
 FLEET_ADDON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FLEET_DIR="${HOME}/.aap-demo/fleet"
+FLEET_DIR="${AAP_DEMO_DIR:-$HOME/.aap-demo}/fleet"
 FLEET_NODE_MEM="${FLEET_NODE_MEM:-1024}"
 FLEET_NODE_CPUS="${FLEET_NODE_CPUS:-2}"
 FLEET_NODE_PORT_BASE=2200
@@ -17,7 +17,7 @@ FLEET_NODE_PORT_BASE=2200
 # -----------------------------------------------------------------------------
 
 _fleet_migrate_from_seed_nodes() {
-  local old_dir="${HOME}/.aap-demo/nodes"
+  local old_dir="${AAP_DEMO_DIR:-$HOME/.aap-demo}/nodes"
   [ -d "$old_dir" ] || return 0
   # Already migrated if fleet dir has node subdirs
   if compgen -G "${FLEET_DIR}/node-*" >/dev/null 2>&1; then
@@ -46,7 +46,7 @@ _fleet_migrate_from_seed_nodes() {
   done
 
   # Migrate SEED_IMAGE → FLEET_IMAGE in config
-  local config="${HOME}/.aap-demo/config"
+  local config="${AAP_DEMO_CONFIG:-${AAP_DEMO_DIR:-$HOME/.aap-demo}/config}"
   if [ -f "$config" ] && grep -q '^SEED_IMAGE=' "$config"; then
     if ! grep -q '^FLEET_IMAGE=' "$config"; then
       sed -i.bak 's/^SEED_IMAGE=/FLEET_IMAGE=/' "$config" && rm -f "${config}.bak"
@@ -779,7 +779,7 @@ fleet_count() {
 # Save image path to config for reuse
 _fleet_save_image_config() {
   local image_path="$1"
-  local config="${AAP_DEMO_CONFIG_FILE:-$HOME/.aap-demo/config}"
+  local config="${AAP_DEMO_CONFIG_FILE:-${AAP_DEMO_CONFIG:-${AAP_DEMO_DIR:-$HOME/.aap-demo}/config}}"
   mkdir -p "$(dirname "$config")"
   if [ -f "$config" ] && grep -q '^FLEET_IMAGE=' "$config"; then
     sed -i.bak "s|^FLEET_IMAGE=.*|FLEET_IMAGE=${image_path}|" "$config" && rm -f "${config}.bak"

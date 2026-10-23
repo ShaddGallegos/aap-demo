@@ -127,7 +127,7 @@ _aap_demo() {
       if [ "$COMP_CWORD" -eq 2 ]; then
         _aap_demo_complete_words "keepalive"
       elif [ "$subcommand" = keepalive ]; then
-        _aap_demo_complete_words "enable status disable run"
+        _aap_demo_complete_words "setup enable status disable run"
       fi
       ;;
     service)

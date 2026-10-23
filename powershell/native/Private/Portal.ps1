@@ -320,6 +320,9 @@ function Resolve-AapPortalProfile {
 
 function Test-AapPortalLocalArchitecture {
   $localArch = $env:PROCESSOR_ARCHITECTURE
+  if ($localArch -notmatch '^(AMD64|x86_64|ARM64|AARCH64)$') {
+    throw "Unsupported local architecture: $localArch"
+  }
   $isLocalArm = $localArch -match 'ARM|AARCH64'
 
   if ($Script:AapPortalState.IsArmCluster) {

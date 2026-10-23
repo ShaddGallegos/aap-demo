@@ -478,7 +478,7 @@ apd_ensure_aap_credential() {
 }
 
 apd_configure_galaxy_credentials() {
-  local token_file="${1:-${GALAXY_TOKEN_FILE:-$HOME/.aap-demo/galaxy-token}}"
+  local token_file="${1:-${GALAXY_TOKEN_FILE:-${AAP_DEMO_DIR:-$HOME/.aap-demo}/galaxy-token}}"
   local apd_org_id token cred_name cred_id patch_result
   local -a cred_names=("Automation Hub Certified Content" "Automation Hub Validated Content")
 

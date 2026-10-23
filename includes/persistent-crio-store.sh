@@ -21,9 +21,9 @@ _persistent_crio_store_disk() {
   if [ -n "${AAP_IMAGE_STORE_DISK:-}" ]; then
     echo "$AAP_IMAGE_STORE_DISK"
   elif _persistent_crio_store_is_macos; then
-    echo "${HOME}/.aap-demo/storage/crio-images.raw"
+    echo "${AAP_DEMO_DIR:-$HOME/.aap-demo}/storage/crio-images.raw"
   else
-    echo "${HOME}/.aap-demo/storage/crio-images.qcow2"
+    echo "${AAP_DEMO_DIR:-$HOME/.aap-demo}/storage/crio-images.qcow2"
   fi
 }
 

@@ -111,17 +111,20 @@ _maintenance_uninstall_preview() {
   echo "  • All Fleet VMs, overlays, SSH keys, and cached Fleet images"
   echo "  • Downloaded CRC bundle and cache: ${crc_dir}"
   echo "  • Generated credentials, kubeconfig, addon state, caches, and virtualenvs"
+  echo "  • The aap_demo section of the encrypted credential Vault"
   echo "  • Persistent CRI-O image disk and local OCI image cache"
   echo "  • Temporary swap file created by aap-demo"
   echo "  • Ingress CA entries from system and browser trust stores"
   echo "  • Claude Code aap-demo MCP registration and shell CA export"
+  echo "  • Dashboard process and logs"
+  echo "  • Linux/macOS recovery services, configuration, and retained backups"
   echo "  • aap-demo CLI symlink and shell completion files"
   echo "  • Generated private system-information document and temporary logs"
   echo ""
   echo "Preserved:"
-  echo "  • Encrypted credentials in $HOME/.ansible/conf/env.yml"
   echo "  • Source repository: ${SCRIPT_DIR}"
-  echo "  • Shared OS packages and libvirt group membership"
+  echo "  • Unrelated keys in $HOME/.ansible/conf/env.yml"
+  echo "  • Shared OS packages, command-line tools, and libvirt group membership"
   echo ""
   du -sh "$data_dir" "$crc_dir" 2>/dev/null | sed 's/^/  /' || true
 }
@@ -165,13 +168,100 @@ _maintenance_remove_shell_lines() {
   done
 }
 
-_maintenance_remove_state_preserving_pull_secret() {
+_maintenance_remove_data_dir() {
   local data_dir="$1"
   _maintenance_validate_uninstall_path "$data_dir" || return 1
 
   rm -rf -- "$data_dir"
-  mkdir -p "$data_dir"
-  chmod 700 "$data_dir"
+}
+
+_maintenance_stop_dashboard() {
+  local port="${AAP_DEMO_DASHBOARD_PORT:-8765}" health pid repo_root
+  command -v curl >/dev/null 2>&1 || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  health=$(curl --noproxy '*' -fsS --connect-timeout 1 --max-time 2 \
+    "http://127.0.0.1:${port}/api/health" 2>/dev/null) || return 0
+  if [ "$(jq -r '.service // empty' <<<"$health")" != aap-demo-dashboard ]; then
+    return 0
+  fi
+  repo_root=$(jq -r '.repo_root // empty' <<<"$health")
+  [ "$repo_root" = "$SCRIPT_DIR" ] || return 0
+  pid=$(jq -r '.pid // empty' <<<"$health")
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || {
+    echo "ERROR: Dashboard returned an invalid process ID" >&2
+    return 1
+  }
+  kill "$pid" || {
+    echo "ERROR: Failed to stop aap-demo dashboard process $pid" >&2
+    return 1
+  }
+  local attempt
+  for attempt in {1..20}; do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.1
+  done
+  echo "ERROR: aap-demo dashboard process $pid did not stop" >&2
+  return 1
+}
+
+_maintenance_remove_state_service() {
+  local system_unit="${AAP_DEMO_SYSTEMD_UNIT_FILE:-/etc/systemd/system/aap-demo.service}"
+  local system_config="${AAP_DEMO_SYSTEM_CONFIG_DIR:-/etc/aap-demo}"
+  local system_libexec="${AAP_DEMO_SYSTEM_LIBEXEC_DIR:-/usr/local/libexec}"
+  local system_backups="${AAP_DEMO_STATE_BACKUP_DIR:-/var/lib/aap-demo/$(id -un)}"
+  local mac_root="${AAP_DEMO_MAC_STATE_ROOT:-$HOME/Library/Application Support/aap-demo}"
+  local mac_plist="${AAP_DEMO_MAC_STATE_PLIST:-$HOME/Library/LaunchAgents/com.aap-demo.recovery.plist}"
+
+  case "$(uname -s)" in
+    Darwin)
+      [ "$(basename "$mac_root")" = aap-demo ] || {
+        echo "ERROR: Refusing unsafe macOS state path: $mac_root" >&2
+        return 1
+      }
+      if command -v launchctl >/dev/null 2>&1 \
+        && launchctl print "gui/$(id -u)/com.aap-demo.recovery" >/dev/null 2>&1; then
+        launchctl bootout "gui/$(id -u)/com.aap-demo.recovery" || return 1
+      fi
+      rm -f -- "$mac_plist"
+      _maintenance_validate_uninstall_path "$mac_root" || return 1
+      rm -rf -- "$mac_root"
+      ;;
+    Linux)
+      [ "$(basename "$system_config")" = aap-demo ] \
+        && [ "$(basename "$(dirname "$system_backups")")" = aap-demo ] || {
+        echo "ERROR: Refusing unsafe Linux state-service paths" >&2
+        return 1
+      }
+      if [ -f "$system_config/owner" ] \
+        && [ "$(cat "$system_config/owner")" != "$(id -un)" ]; then
+        echo "ERROR: Refusing to remove another user's aap-demo recovery service" >&2
+        return 1
+      fi
+      if [ -e "$system_unit" ] || [ -d "$system_config" ]; then
+        sudo systemctl disable --now aap-demo.service >/dev/null 2>&1 || {
+          echo "ERROR: Failed to disable the aap-demo recovery service" >&2
+          return 1
+        }
+      fi
+      sudo rm -f -- \
+        "$system_unit" \
+        "$system_libexec/aap-demo-state" \
+        "$system_libexec/aap-demo-operation-lock.sh"
+      sudo rm -rf -- "$system_config" "$system_backups"
+      sudo rmdir "$(dirname "$system_backups")" 2>/dev/null || true
+      if command -v systemctl >/dev/null 2>&1; then
+        sudo systemctl daemon-reload >/dev/null
+      fi
+      ;;
+  esac
+}
+
+_maintenance_remove_managed_credentials() {
+  if ! declare -F aap_demo_vault_remove_managed >/dev/null; then
+    # shellcheck source=credential-vault.sh
+    source "${SCRIPT_DIR}/includes/credential-vault.sh"
+  fi
+  aap_demo_vault_remove_managed
 }
 
 _maintenance_uninstall_apply() {
@@ -184,6 +274,8 @@ _maintenance_uninstall_apply() {
 
   echo ""
   echo "Removing aap-demo environment..."
+
+  _maintenance_stop_dashboard || return 1
 
   if command -v claude >/dev/null 2>&1; then
     claude mcp remove aap-demo --scope user >/dev/null 2>&1 || true
@@ -242,7 +334,11 @@ _maintenance_uninstall_apply() {
     }
   fi
 
-  _maintenance_remove_state_preserving_pull_secret "$data_dir"
+  _maintenance_remove_managed_credentials || {
+    echo "ERROR: Failed to remove aap-demo credentials from the encrypted Vault" >&2
+    return 1
+  }
+  _maintenance_remove_data_dir "$data_dir"
   rm -rf -- "$crc_dir"
   cli_path="$HOME/.local/bin/aap-demo"
   if [ -L "$cli_path" ] \
@@ -253,12 +349,17 @@ _maintenance_uninstall_apply() {
     "$HOME/.zsh/completions/_aap-demo" \
     "$HOME/.local/share/bash-completion/completions/aap-demo" \
     "${SCRIPT_DIR}/docs/aap-demo-system-info.md" \
-    /tmp/crc-start.log
+    "${SCRIPT_DIR}/docs/aap-demo-system-info.json" \
+    /tmp/crc-start.log \
+    /tmp/crc-recovery.log \
+    /tmp/crc-daemon.log \
+    /tmp/aap-demo-local-cache.oci
 
   echo ""
   echo "✓ aap-demo environment uninstalled"
-  echo "  Preserved encrypted credentials: $HOME/.ansible/conf/env.yml"
+  echo "  Removed all aap-demo settings and managed credentials"
   echo "  Preserved source repository: ${SCRIPT_DIR}"
+  echo "  Preserved shared tools and unrelated Vault content"
 }
 
 _maintenance_uninstall() {
@@ -286,5 +387,9 @@ _maintenance_uninstall() {
     fi
   fi
 
+  _maintenance_remove_state_service || return 1
+  if declare -F aap_demo_acquire_operation_lock >/dev/null; then
+    aap_demo_acquire_operation_lock "maintenance-uninstall" || return 1
+  fi
   _maintenance_uninstall_apply
 }

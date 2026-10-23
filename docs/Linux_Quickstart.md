@@ -19,11 +19,12 @@ sudo dnf install -y git curl jq python3 python3-pip ansible-core \
   libvirt qemu-kvm qemu-img rsync libxml2 policycoreutils nss-tools
 git clone https://github.com/ShaddGallegos/aap-demo.git
 cd aap-demo
-export PATH="$HOME/.local/bin:$PATH"
+./install.sh
+source ~/.bashrc
 ```
 
-Add that PATH export to your shell profile (usually `~/.bashrc`) for new
-terminals, if it is not already there.
+The installer adds an idempotent `~/.local/bin` PATH block and Bash completion
+loader to `~/.bashrc`. New Bash sessions load both automatically.
 
 Download your personal [Red Hat pull secret](https://console.redhat.com/openshift/install/pull-secret)
 to `~/Downloads/pull-secret.txt`. It is a credential: do not commit or share it.

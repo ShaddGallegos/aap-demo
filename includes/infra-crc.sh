@@ -133,7 +133,7 @@ _infra_crc_get_state() {
 _infra_crc_get_kubeconfig() {
   local dest="$1"
   _crc_exec sudo cat /var/lib/microshift/resources/kubeadmin/kubeconfig >"$dest" 2>/dev/null \
-    || cp "${AAP_DEMO_KUBECONFIG:-$HOME/.aap-demo/kubeconfig.microshift}" "$dest" 2>/dev/null \
+    || cp "${AAP_DEMO_KUBECONFIG:-${AAP_DEMO_DIR:-$HOME/.aap-demo}/kubeconfig.microshift}" "$dest" 2>/dev/null \
     || cp ~/.crc/machines/crc/kubeconfig "$dest" 2>/dev/null
 }
 
@@ -143,7 +143,7 @@ _detect_crc_preset() {
     return 0
   fi
 
-  local config="${HOME}/.aap-demo/config"
+  local config="${AAP_DEMO_CONFIG:-${AAP_DEMO_DIR:-$HOME/.aap-demo}/config}"
   if [ -f "$config" ]; then
     local saved
     saved=$(grep '^CRC_PRESET=' "$config" 2>/dev/null | cut -d= -f2)

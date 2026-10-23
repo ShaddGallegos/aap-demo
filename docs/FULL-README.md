@@ -3,6 +3,29 @@
 Local cluster infrastructure for AAP 2.7 deployment, powered by OpenShift Local.
 Deploy AAP in minutes on macOS, Linux, or Windows.
 
+## Portability and idempotency
+
+Lifecycle and addon commands are convergence operations: rerunning a successful
+create, deploy, enable, start, wire, or full-demo command reuses or updates
+managed resources rather than intentionally creating duplicates. Kubernetes
+namespaces and managed secrets use apply-style updates, while persistent config
+keys are replaced in place.
+
+Bash state defaults to `~/.aap-demo` and its config defaults to
+`~/.aap-demo/config`. Override these with `AAP_DEMO_DIR` and
+`AAP_DEMO_CONFIG`; child addon processes inherit both. `NAMESPACE`,
+`KUBECONFIG`, and `AAP_DEMO_KUBECONFIG` select non-default cluster targets.
+`QUIET=true` is the noninteractive contract and fails with guidance if required
+credentials or choices are unavailable.
+
+Linux and macOS use Bash. Native Windows uses PowerShell, and WSL uses the
+Windows-hosted wrapper. Addons select `amd64`/`x86_64` or `arm64`/`aarch64`
+artifacts only where both are supported and fail explicitly otherwise. CRC
+keeps its upstream-owned files in `~/.crc`. Linux systemd recovery intentionally
+requires default state paths; custom paths are supported by ordinary CLI/addon
+operations. A failed or interrupted remote API operation is not treated as
+success and can be safely retried after connectivity is restored.
+
 ## Quick Start
 
 ### Prerequisites
@@ -94,12 +117,18 @@ cp ~/Downloads/pull-secret.txt ~/.aap-demo/pull-secret.txt
 
 The next create/deploy imports this file into encrypted
 `~/.ansible/conf/env.yml` and removes the managed plaintext copy. Delete the
-original download after successful import.
+original download after successful import. When the pull secret is missing but
+the encrypted Vault contains a valid Customer Portal offline token,
+`aap-demo create` exchanges that token for short-lived access and retrieves a
+fresh pull secret from Red Hat's official API without writing plaintext to disk.
+This implements the REST automation documented in Red Hat Solution
+[4844461](https://access.redhat.com/solutions/4844461); direct username/password
+grants are intentionally not used.
 
 #### Install
 
 ```bash
-git clone https://github.com/RedHatOfficial/aap-demo.git
+git clone https://github.com/ShaddGallegos/aap-demo.git
 cd aap-demo && ./install.sh
 ```
 
@@ -127,7 +156,7 @@ Copy-Item "$env:USERPROFILE\Downloads\pull-secret.txt" "$env:USERPROFILE\.aap-de
 #### Install
 
 ```powershell
-git clone https://github.com/RedHatOfficial/aap-demo.git
+git clone https://github.com/ShaddGallegos/aap-demo.git
 cd aap-demo
 .\powershell\install.ps1
 ```
@@ -221,7 +250,7 @@ aap-demo deploys Ansible Automation Platform 2.7 to OpenShift Local (MicroShift)
 
 aap-demo automatically configures Ansible Galaxy authentication for downloading certified and private collections:
 
-- **Red Hat Certified Collections**: Offline token stored under `aap_demo` in `~/.ansible/conf/env.yml`
+- **Red Hat Certified Collections**: Offline token stored as `ah_offline_token` in `~/.ansible/conf/env.yml`
 - **Private Automation Hub**: URL in `~/.aap-demo/pah-config.yml`; credentials in the encrypted Vault
 - **Priority-based fallback**: PAH → console.redhat.com → galaxy.ansible.com (community)
 
@@ -281,20 +310,23 @@ Automation Orchestrator, then enables Fleet, attaches the AAP subscription, and
 reconciles three started and registered RHEL 9 nodes. Product Demos is installed
 after licensing succeeds. A final strict `aap-demo wire` runs after all
 components are present, then the dashboard launches. Fleet image download
-and AAP subscription attachment require configured Red Hat credentials. Run
-`aap-demo fleet auth` once before the full demo. If the Automation Hub token is
-not configured, setup-pah prompts for that distinct token. Customer Portal and
-Automation Hub tokens remain separate in encrypted storage. Reruns reuse
-existing Fleet nodes instead of creating duplicates. Use `--no-open` to run the
-dashboard without opening a browser.
+and AAP subscription attachment require Red Hat credentials. Full-demo checks
+them first and starts the secure `fleet auth` prompts when they are missing or
+invalid. Runs with `QUIET=true` remain noninteractive and require credentials to
+be configured in advance. If the Automation Hub token is not configured,
+setup-pah prompts for that distinct token. Customer Portal and Automation Hub
+tokens remain separate in encrypted storage. Reruns reuse existing Fleet nodes
+instead of creating duplicates. Use `--no-open` to run the dashboard without
+opening a browser.
 
 `aap-demo dashboard` now starts in the background and returns after its localhost
 listener is ready. Repeating it reuses this checkout's running dashboard.
 Logs are written to `~/.aap-demo/dashboard.log` (or `$AAP_DEMO_DIR/dashboard.log`).
-The Environment Overview shows the host OS and, when available, CRC guest OS.
-Use the small **Restart dashboard** button to restart only the dashboard and
-reconnect the page; it is blocked during dashboard add-on operations and does
-not restart CRC, AAP or Fleet. For foreground debugging, use
+The Environment Overview shows the host OS, CRC guest OS when available, and
+the AAP subscription selected during automatic licensing. Use the small
+**Restart dashboard** button to restart only the dashboard and reconnect the
+page; it is blocked during dashboard add-on operations and does not restart
+CRC, AAP or Fleet. For foreground debugging, use
 `python3 dashboard/server.py --no-open` from the repository root.
 
 `maintenance --apply` keeps running containers, images used by workloads,
@@ -304,16 +336,31 @@ journals older than seven days and reports the VM disk space reclaimed.
 `maintenance uninstall --apply` requires typing `UNINSTALL` and removes the CRC
 cluster, Fleet VMs and images, CRC downloads, generated credentials and caches,
 temporary swap, ingress trust entries, MCP/shell integration, CLI symlink, and
-completions. It preserves the source repository and encrypted credential Vault. For
-noninteractive use, also set `AAP_DEMO_UNINSTALL_CONFIRM=UNINSTALL`.
+completions. It also stops the dashboard, removes recovery services and backups,
+deletes `~/.aap-demo`, and removes the `aap_demo` namespace from the encrypted
+credential Vault. If no unrelated Vault data remains, it removes the Vault
+file, but always preserves the shared Vault password file. The source
+repository, shared command-line tools/packages,
+unrelated Vault keys, and libvirt group membership are preserved. For noninteractive
+use, also set `AAP_DEMO_UNINSTALL_CONFIRM=UNINSTALL`.
 
-Retained passwords and tokens are stored under the `aap_demo` namespace in
-Ansible Vault-encrypted `~/.ansible/conf/env.yml`, using
+Retained passwords and tokens are stored under the `aap_demo` namespace and
+the `ah_offline_token` key in Ansible Vault-encrypted `~/.ansible/conf/env.yml`, using
 `~/.ansible/conf/.vaultpass.txt`. Existing unrelated YAML is preserved during
 updates and migration. The directory is mode `0700`; both files are mode
-`0600`, and the password is generated automatically when absent. Co-locating
+`0600`, and the password is generated automatically for a new Vault only.
+Existing password contents are never replaced; uninstall preserves the shared
+password for other products. Co-locating
 the encrypted Vault and password protects against accidental
 publication, not compromise of the local user account.
+
+`aap-demo status --show-secrets` reveals available AAP and addon login
+passwords only in an interactive terminal; redirected output is rejected. The
+Customer Portal token from `https://access.redhat.com/management/api` is stored
+as `aap_demo.redhat.offline_token`. The distinct Automation Hub token from
+`https://console.redhat.com/ansible/automation-hub/token` is stored as
+`ah_offline_token` (the older `aap_demo.galaxy.offline_token` key remains readable).
+They are validated and maintained separately.
 
 Offline tokens can expire after 30 days without use. The optional keepalive
 reads configured Customer Portal and Automation Hub tokens directly from the
@@ -322,6 +369,7 @@ discards the results without logging secrets:
 
 ```bash
 aap-demo credentials keepalive enable
+aap-demo credentials keepalive setup    # Alternative Hub-only four-day cron workflow
 aap-demo credentials keepalive status
 aap-demo credentials keepalive run
 aap-demo credentials keepalive disable
@@ -330,6 +378,10 @@ aap-demo credentials keepalive disable
 Linux uses a persistent systemd user timer so a missed run executes after wake
 or boot. macOS uses a LaunchAgent. Invalid tokens can generate desktop
 notifications; temporary network failures wait for the next scheduled retry.
+The `setup` action securely validates/stores the Hub token and installs an
+idempotent `0 0 */4 * *` user cron job. See
+[collection authentication](collection-authentication.md) for password-file
+configuration, retry behavior, and cron timing details.
 
 ## Architecture
 

@@ -220,7 +220,7 @@ if [ -n "$MCP_TOKEN" ]; then
     fi
 
     # Get the ingress CA certificate path (saved by ingress-ca-trust.sh)
-    CA_PATH="${AAP_DEMO_CONFIG_DIR:-${HOME}/.aap-demo}/crc-ingress-ca.crt"
+    CA_PATH="${AAP_DEMO_CONFIG_DIR:-${AAP_DEMO_DIR:-$HOME/.aap-demo}}/crc-ingress-ca.crt"
 
     # Configure NODE_EXTRA_CA_CERTS in shell profile for persistent trust
     echo "  Configuring NODE_EXTRA_CA_CERTS in shell profile..."
@@ -242,7 +242,7 @@ if [ -n "$MCP_TOKEN" ]; then
     fi
 
     if [ -n "$SHELL_PROFILE" ]; then
-      CA_EXPORT='export NODE_EXTRA_CA_CERTS="${AAP_DEMO_CONFIG_DIR:-${HOME}/.aap-demo}/crc-ingress-ca.crt"'
+      CA_EXPORT='export NODE_EXTRA_CA_CERTS="${AAP_DEMO_CONFIG_DIR:-${AAP_DEMO_DIR:-$HOME/.aap-demo}}/crc-ingress-ca.crt"'
       if ! grep -q "NODE_EXTRA_CA_CERTS.*crc-ingress-ca.crt" "$SHELL_PROFILE" 2>/dev/null; then
         echo "" >>"$SHELL_PROFILE"
         echo "# AAP Demo - Trust self-signed ingress CA for Node.js (Claude Code MCP)" >>"$SHELL_PROFILE"

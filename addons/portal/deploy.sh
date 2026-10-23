@@ -10,7 +10,7 @@ source "${SCRIPT_DIR}/../../includes/secure-curl.sh"
 AAP_NAMESPACE="${AAP_NAMESPACE:-${NAMESPACE:-aap-operator}}"
 PORTAL_NAMESPACE="${PORTAL_NAMESPACE:-redhat-rhaap-portal}"
 ACTION="${1:-deploy}"
-PORTAL_DIR="${HOME}/.aap-demo/portal"
+PORTAL_DIR="${AAP_DEMO_DIR:-$HOME/.aap-demo}/portal"
 AAP_DEMO_LOCAL_BIN="${HOME}/.local/bin"
 if [[ ":${PATH:-}:" == *":${AAP_DEMO_LOCAL_BIN}:"* ]]; then
   AAP_DEMO_LOCAL_BIN_IN_PATH=true
@@ -105,11 +105,14 @@ fi
 detect_arch() {
   local arch
   arch=$(uname -m)
-  if [[ "$arch" == "arm64" ]] || [[ "$arch" == "aarch64" ]]; then
-    echo "arm"
-  else
-    echo "x86"
-  fi
+  case "$arch" in
+    arm64 | aarch64) echo "arm" ;;
+    amd64 | x86_64) echo "x86" ;;
+    *)
+      echo "❌ Unsupported local architecture: $arch" >&2
+      return 1
+      ;;
+  esac
 }
 
 detect_cluster_arch() {
@@ -137,26 +140,32 @@ resolve_portal_profile() {
   local cluster_arch
   cluster_arch=$(detect_cluster_arch)
 
-  if [ -z "$cluster_arch" ]; then
-    echo "⚠️  Could not detect cluster architecture; defaulting to x86 profile"
-    IS_ARM_CLUSTER=false
-    return
-  fi
-
-  echo "✓ Cluster architecture: $cluster_arch"
-
-  if [[ "$cluster_arch" == "arm64" ]] || [[ "$cluster_arch" == "aarch64" ]]; then
-    IS_ARM_CLUSTER=true
-    echo "✓ Using ARM profile (upstream community RHDH images)"
-  else
-    IS_ARM_CLUSTER=false
-    echo "✓ Using x86 profile (Red Hat RHDH images)"
-  fi
+  case "$cluster_arch" in
+    arm64 | aarch64)
+      IS_ARM_CLUSTER=true
+      echo "✓ Cluster architecture: $cluster_arch"
+      echo "✓ Using ARM profile (upstream community RHDH images)"
+      ;;
+    amd64 | x86_64)
+      IS_ARM_CLUSTER=false
+      echo "✓ Cluster architecture: $cluster_arch"
+      echo "✓ Using x86 profile (Red Hat RHDH images)"
+      ;;
+    "")
+      echo "❌ Could not detect cluster architecture." >&2
+      echo "   Verify cluster access or set PORTAL_ARCH=arm64|amd64." >&2
+      return 1
+      ;;
+    *)
+      echo "❌ Unsupported cluster architecture: $cluster_arch" >&2
+      return 1
+      ;;
+  esac
 }
 
 check_architecture() {
   local local_arch
-  local_arch=$(detect_arch)
+  local_arch=$(detect_arch) || return 1
 
   if [ "$IS_ARM_CLUSTER" = true ]; then
     if [ "$local_arch" = "arm" ]; then
@@ -326,7 +335,7 @@ copy_pull_secret_to_portal_namespace() {
 setup_portal_namespace() {
   echo "Setting up portal namespace: $PORTAL_NAMESPACE"
 
-  kubectl create namespace "$PORTAL_NAMESPACE" 2>/dev/null || true
+  kubectl create namespace "$PORTAL_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   kubectl label namespace "$PORTAL_NAMESPACE" \
     pod-security.kubernetes.io/enforce=privileged \
     pod-security.kubernetes.io/audit=privileged \

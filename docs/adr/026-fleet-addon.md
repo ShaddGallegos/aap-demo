@@ -143,10 +143,12 @@ use the expected Red Hat CDN host and image filename. It remains only in memory,
 is never printed or persisted, and is used without forwarding the bearer token.
 The retained CDN username/password are not transmitted by this workflow.
 During AAP registration, however, Fleet sends those portal credentials to AAP's
-`/config/subscriptions/` endpoint, filters returned subscriptions by the encrypted
-account number, and attaches the encrypted subscription selection through
-`/config/attach/`. Secrets are sent in request bodies rather than process
-arguments.
+`/config/subscriptions/` endpoint. That response is scoped by the authenticated
+portal account. Fleet uses a previously saved subscription ID when it remains
+available, otherwise attaches the first entitled subscription through
+`/config/attach/`. The selected ID remains encrypted and its non-secret display
+name appears in dashboard inventory. Secrets are sent in request bodies rather
+than process arguments.
 The Vault password is read from
 `~/.ansible/conf/.vaultpass.txt`. Both files and their parent directory
 are restricted to the current user.

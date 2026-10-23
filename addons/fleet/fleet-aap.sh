@@ -7,7 +7,11 @@
 if [ -n "${_FLEET_AAP_LOADED:-}" ]; then return 0; fi
 _FLEET_AAP_LOADED=1
 
-FLEET_DIR="${HOME}/.aap-demo/fleet"
+FLEET_AAP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../../includes/secure-curl.sh
+source "${FLEET_AAP_DIR}/../../includes/secure-curl.sh"
+
+FLEET_DIR="${AAP_DEMO_DIR:-$HOME/.aap-demo}/fleet"
 
 _FLEET_AAP_URL=""
 _FLEET_AAP_PASSWORD=""
@@ -79,7 +83,7 @@ _fleet_aap_api() {
 
   local url="${_FLEET_AAP_URL}/api/controller/v2${endpoint}"
   local curl_args=(
-    -s -S
+    -s -S -f
     -X "$method"
     -H "Content-Type: application/json"
     -u "admin:${_FLEET_AAP_PASSWORD}"

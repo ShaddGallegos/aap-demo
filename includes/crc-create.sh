@@ -57,7 +57,7 @@ _crc_start_with_pull_secret() (
 
 _save_config_key() {
   local key="$1" value="$2"
-  local config="${HOME}/.aap-demo/config"
+  local config="${AAP_DEMO_CONFIG:-${AAP_DEMO_DIR:-$HOME/.aap-demo}/config}"
   mkdir -p "$(dirname "$config")"
   if [ -f "$config" ] && grep -q "^${key}=" "$config"; then
     sed -i.bak "s/^${key}=.*/${key}=${value}/" "$config" && rm -f "${config}.bak"
@@ -389,9 +389,9 @@ _DEFAULT_CPUS=8
 _DEFAULT_MEMORY_GB=16
 
 # Use saved values as defaults when available
-if [ -f "${HOME}/.aap-demo/config" ]; then
-  _saved_cpus=$(grep '^CRC_CPUS=' "${HOME}/.aap-demo/config" 2>/dev/null | cut -d= -f2 || true)
-  _saved_memory=$(grep '^CRC_MEMORY=' "${HOME}/.aap-demo/config" 2>/dev/null | cut -d= -f2 || true)
+if [ -f "${AAP_DEMO_CONFIG:-${AAP_DEMO_DIR:-$HOME/.aap-demo}/config}" ]; then
+  _saved_cpus=$(grep '^CRC_CPUS=' "${AAP_DEMO_CONFIG:-${AAP_DEMO_DIR:-$HOME/.aap-demo}/config}" 2>/dev/null | cut -d= -f2 || true)
+  _saved_memory=$(grep '^CRC_MEMORY=' "${AAP_DEMO_CONFIG:-${AAP_DEMO_DIR:-$HOME/.aap-demo}/config}" 2>/dev/null | cut -d= -f2 || true)
   [[ "${_saved_cpus:-}" =~ ^[0-9]+$ ]] || _saved_cpus=""
   [[ "${_saved_memory:-}" =~ ^[0-9]+$ ]] || _saved_memory=""
   [ -n "$_saved_cpus" ] && _DEFAULT_CPUS="$_saved_cpus"
@@ -528,6 +528,12 @@ fi
 # Find pull secret
 # ---------------------------------------------------------------------------
 PULL_SECRET_VALUE=$(aap_demo_pull_secret_get 2>/dev/null || true)
+if [ -z "$PULL_SECRET_VALUE" ] \
+  && aap_demo_vault_get "aap_demo.redhat.offline_token" >/dev/null 2>&1; then
+  printf "${_BLUE}▸${_NC} Retrieving OpenShift pull secret from Red Hat...\n"
+  PULL_SECRET_VALUE=$(aap_demo_pull_secret_fetch_redhat) || exit 1
+  printf "  ${_GREEN}✓${_NC} Pull secret saved to encrypted Vault\n"
+fi
 if [ -z "$PULL_SECRET_VALUE" ]; then
   printf "${_RED}▸${_NC} Pull secret not found\n"
   echo ""
@@ -729,8 +735,8 @@ fi
 
 # Deploy saved addons from config (skip addons that require AAP to be deployed first)
 SAVED_ADDONS=""
-if [ -f "${HOME}/.aap-demo/config" ]; then
-  SAVED_ADDONS=$(grep '^ADDONS=' "${HOME}/.aap-demo/config" 2>/dev/null | cut -d= -f2 | tr ',' ' ' || true)
+if [ -f "${AAP_DEMO_CONFIG:-${AAP_DEMO_DIR:-$HOME/.aap-demo}/config}" ]; then
+  SAVED_ADDONS=$(grep '^ADDONS=' "${AAP_DEMO_CONFIG:-${AAP_DEMO_DIR:-$HOME/.aap-demo}/config}" 2>/dev/null | cut -d= -f2 | tr ',' ' ' || true)
 fi
 
 if [ -n "$SAVED_ADDONS" ]; then

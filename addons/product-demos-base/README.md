@@ -151,14 +151,17 @@ Wait until AAP finishes reconciling, then re-run `aap-demo enable product-demos`
 ### License is missing / cannot launch installer jobs
 
 AAP will not launch jobs until a subscription is attached. A destroy/redeploy clears the previous
-license. Log into the AAP UI (`aap-demo status` prints the URL and admin password), open
-**Settings → Subscription**, and register a developer/trial subscription or upload a manifest.
-Then re-run:
+license. Configure Red Hat Customer Portal credentials and let Fleet attach the
+saved subscription ID or first entitled subscription automatically:
 
 ```bash
+aap-demo fleet auth
+aap-demo fleet register
 aap-demo enable product-demos
 ```
 
+The selected subscription name appears in the dashboard Environment Overview.
+You can change it later in AAP under **Settings → Subscription**.
 Bootstrap resources created before the license check can be reused; the retry launches the install
 job once the subscription is valid.
 

@@ -100,6 +100,7 @@ FORCE="${FORCE:-false}"
 # Config file for persistent settings
 AAP_DEMO_CONFIG="${AAP_DEMO_CONFIG:-$HOME/.aap-demo/config}"
 AAP_DEMO_CONFIG_FILE="$AAP_DEMO_CONFIG"
+export AAP_DEMO_CONFIG AAP_DEMO_CONFIG_FILE
 
 # Source config file (command-line env vars take precedence)
 if [ -f "$AAP_DEMO_CONFIG" ]; then
@@ -114,8 +115,8 @@ if [ -f "$AAP_DEMO_CONFIG" ]; then
 fi
 
 # Collection authentication environment variables
-GALAXY_TOKEN_FILE="${GALAXY_TOKEN_FILE:-$HOME/.aap-demo/galaxy-token}"
-PAH_CONFIG_FILE="${PAH_CONFIG_FILE:-$HOME/.aap-demo/pah-config.yml}"
+GALAXY_TOKEN_FILE="${GALAXY_TOKEN_FILE:-$AAP_DEMO_DIR/galaxy-token}"
+PAH_CONFIG_FILE="${PAH_CONFIG_FILE:-$AAP_DEMO_DIR/pah-config.yml}"
 SKIP_COLLECTIONS="${SKIP_COLLECTIONS:-false}"
 
 # Infrastructure type (OpenShift Local only)
@@ -392,11 +393,17 @@ check_kubectl() {
       echo "  brew install kubectl"
       echo ""
       echo "  # macOS (manual)"
-      if [ "$(uname -m)" = "arm64" ]; then
-        echo "  curl -LO https://dl.k8s.io/release/\$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/darwin/arm64/kubectl"
-      else
-        echo "  curl -LO https://dl.k8s.io/release/\$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/darwin/amd64/kubectl"
-      fi
+      case "$(uname -m)" in
+        arm64 | aarch64)
+          echo "  curl -LO https://dl.k8s.io/release/\$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/darwin/arm64/kubectl"
+          ;;
+        x86_64 | amd64)
+          echo "  curl -LO https://dl.k8s.io/release/\$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/darwin/amd64/kubectl"
+          ;;
+        *)
+          echo "  Unsupported macOS architecture: $(uname -m)"
+          ;;
+      esac
       echo "  chmod +x kubectl && sudo mv kubectl /usr/local/bin/"
       ;;
     MINGW* | MSYS* | CYGWIN*)
@@ -615,8 +622,8 @@ CORE COMMANDS:
     clean                           Remove AAP while keeping the cluster
     maintenance [--apply]           Preview or remove safe-to-delete VM data
     maintenance uninstall [--apply]
-                                    Fully remove aap-demo; preserves encrypted Vault and source
-    credentials keepalive [enable|status|disable|run]
+                                    Remove all aap-demo state/settings; preserve source and shared tools
+    credentials keepalive [setup|enable|status|disable|run]
                                     Manage opt-in offline-token keepalive
     redeploy                        Clean and redeploy AAP
     redeploy-all                    Destroy and rebuild cluster, AAP, and configured addons
@@ -680,10 +687,24 @@ FLEET COMMANDS:
     fleet add [count] --image <rhel9|rhel10|local-qcow2-path>
                                     Download/cache an entitled image and create VMs
     fleet register                  License AAP if needed, register nodes, and ping them
+                                    Uses a saved subscription ID or first entitled subscription
     fleet start                     Start preserved Fleet VM overlays
     fleet list                      List Fleet VM state
     fleet remove [count|name]       Deregister and remove newest or named VMs
     fleet destroy                   Remove all Fleet VMs and AAP Fleet resources
+
+CREDENTIALS:
+    status --show-secrets           Show login passwords only in an interactive terminal
+    fleet auth                      Configure Customer Portal token and CDN credentials
+                                    Token: https://access.redhat.com/management/api
+    enable setup-pah                Configure the distinct Automation Hub token
+                                    Token: https://console.redhat.com/ansible/automation-hub/token
+    credentials keepalive enable    Validate configured offline tokens daily
+    credentials keepalive setup     Store a validated Hub token and enable four-day cron
+
+    Retained credentials are stored under aap_demo in encrypted:
+      ~/.ansible/conf/env.yml
+    Customer Portal and Automation Hub tokens are separate and never reused.
 
 ENVIRONMENT AND OVERRIDES:
     NAMESPACE=name                  AAP namespace (default: aap-operator)
@@ -718,6 +739,7 @@ ENVIRONMENT AND OVERRIDES:
 EXAMPLES:
     aap-demo deploy
     aap-demo status
+    aap-demo status --show-secrets
     aap-demo status --json
     aap-demo system-info
     aap-demo system-info --redact --output ./aap-support.md
@@ -1277,7 +1299,7 @@ cmd_must_gather() {
 
   # Collect aap-demo specific diagnostics
   echo "Collecting aap-demo diagnostics..."
-  cp "${HOME}/.aap-demo/config" "${dest_dir}/aap-demo/config" 2>/dev/null || true
+  cp "$AAP_DEMO_CONFIG" "${dest_dir}/aap-demo/config" 2>/dev/null || true
   crc status >"${dest_dir}/aap-demo/crc-status.txt" 2>&1 || true
   crc version >"${dest_dir}/aap-demo/crc-version.txt" 2>&1 || true
   kubectl get sc -o yaml >"${dest_dir}/aap-demo/storageclasses.yaml" 2>/dev/null || true
@@ -1843,7 +1865,7 @@ cmd_kubeconfig() {
 
   # Extract kubeconfig with validation
   echo "  Extracting kubeconfig from ${cluster_name}..."
-  mkdir -p "$HOME/.aap-demo"
+  mkdir -p "$AAP_DEMO_DIR"
   TEMP_KUBECONFIG=$(mktemp)
   TEMP_FILES+=("$TEMP_KUBECONFIG")
   chmod 600 "$TEMP_KUBECONFIG"
@@ -2111,7 +2133,7 @@ cmd_status() {
     case "$a" in
       fleet)
         if [ "$enabled" = true ]; then
-          if [ -d "${HOME}/.aap-demo/fleet" ] && [ -f "${SCRIPT_DIR}/addons/fleet/fleet.sh" ]; then
+          if [ -d "${AAP_DEMO_DIR:-$HOME/.aap-demo}/fleet" ] && [ -f "${SCRIPT_DIR}/addons/fleet/fleet.sh" ]; then
             source "${SCRIPT_DIR}/addons/fleet/fleet.sh"
             local _fc
             _fc=$(fleet_count 2>/dev/null || echo "0")
@@ -2182,7 +2204,7 @@ cmd_status() {
   echo ""
 
   # Show fleet nodes (addon)
-  if [ -d "${HOME}/.aap-demo/fleet" ] && [ -f "${SCRIPT_DIR}/addons/fleet/fleet.sh" ]; then
+  if [ -d "${AAP_DEMO_DIR:-$HOME/.aap-demo}/fleet" ] && [ -f "${SCRIPT_DIR}/addons/fleet/fleet.sh" ]; then
     source "${SCRIPT_DIR}/addons/fleet/fleet.sh"
     local _node_count
     _node_count=$(fleet_count 2>/dev/null || echo "0")
@@ -2363,7 +2385,7 @@ cmd_destroy() {
   fi
 
   # Clean up fleet nodes before destroying cluster (addon)
-  if [ -d "${HOME}/.aap-demo/fleet" ] && [ -f "${SCRIPT_DIR}/addons/fleet/fleet.sh" ]; then
+  if [ -d "${AAP_DEMO_DIR:-$HOME/.aap-demo}/fleet" ] && [ -f "${SCRIPT_DIR}/addons/fleet/fleet.sh" ]; then
     source "${SCRIPT_DIR}/addons/fleet/fleet.sh"
     fleet_destroy_all
   fi
@@ -2386,7 +2408,7 @@ cmd_stop() {
   printf "\033[1maap-demo stop\033[0m - Stopping CRC cluster...\n"
 
   # Stop Fleet VMs while preserving their overlay disks for restart.
-  if [ -d "${HOME}/.aap-demo/fleet" ] && [ -f "${SCRIPT_DIR}/addons/fleet/fleet.sh" ]; then
+  if [ -d "${AAP_DEMO_DIR:-$HOME/.aap-demo}/fleet" ] && [ -f "${SCRIPT_DIR}/addons/fleet/fleet.sh" ]; then
     source "${SCRIPT_DIR}/addons/fleet/fleet.sh"
     fleet_stop_all
     echo "  (Restart preserved Fleet nodes with: aap-demo fleet start)"
@@ -2518,30 +2540,50 @@ cmd_create() {
 }
 
 cmd_full_demo() {
-  local QUIET=true
+  local caller_quiet="${QUIET:-false}"
   local ADDONS="mcp-server,setup-pah,product-demos,ollama,ao,fleet"
   local cluster_state
-  export QUIET ADDONS
 
   echo ""
   printf "\033[1maap-demo create --full-demo\033[0m - Building complete local demo...\n"
   echo ""
   echo "Workflow:"
-  echo "  1. Create OpenShift Local cluster"
-  echo "  2. Deploy AAP 2.7"
-  echo "  3. Configure Automation Hub and enable offline-token keepalive"
-  echo "  4. Enable Ollama and Automation Orchestrator"
-  echo "  5. Enable Fleet, attach the AAP subscription, and register three RHEL 9 nodes"
-  echo "  6. Enable Product Demos"
-  echo "  7. Reapply all integrations and launch dashboard"
+  echo "  1. Configure Red Hat Customer Portal and CDN credentials"
+  echo "  2. Create OpenShift Local cluster"
+  echo "  3. Deploy AAP 2.7"
+  echo "  4. Configure Automation Hub and enable offline-token keepalive"
+  echo "  5. Enable Ollama and Automation Orchestrator"
+  echo "  6. Enable Fleet, attach the AAP subscription, and register three RHEL 9 nodes"
+  echo "  7. Enable Product Demos"
+  echo "  8. Reapply all integrations and launch dashboard"
   echo ""
 
   if ! cmd_fleet auth status; then
     echo ""
-    echo "ERROR: Full demo requires valid Red Hat Fleet download credentials." >&2
-    echo "  Configure them first: aap-demo fleet auth" >&2
-    return 1
+    echo "Red Hat Fleet credentials need to be configured before provisioning."
+    if [ "$caller_quiet" = true ]; then
+      echo "ERROR: Full demo cannot prompt for credentials with QUIET=true." >&2
+      echo "  Run interactively, or configure them first: aap-demo fleet auth" >&2
+      return 1
+    fi
+    if ! (: <"$AAP_DEMO_SECRET_PROMPT_DEVICE") 2>/dev/null; then
+      echo "ERROR: Full demo needs an interactive terminal to configure credentials." >&2
+      echo "  Run in a terminal, or configure them first: aap-demo fleet auth" >&2
+      return 1
+    fi
+    echo "Starting secure Red Hat credential setup..."
+    QUIET=false cmd_fleet auth configure || {
+      echo "ERROR: Red Hat Fleet credential setup did not complete." >&2
+      return 1
+    }
+    cmd_fleet auth status || {
+      echo "ERROR: Red Hat Fleet credentials are still invalid after setup." >&2
+      return 1
+    }
   fi
+
+  local QUIET=true
+  export QUIET ADDONS
 
   cluster_state=$(infra_get_state 2>/dev/null || echo "not_created")
   if [ "$cluster_state" = running ]; then
@@ -2583,7 +2625,7 @@ cmd_full_demo() {
 
 cmd_credentials() {
   if [ "${1:-}" != keepalive ]; then
-    _err "Usage: aap-demo credentials keepalive [enable|status|disable|run]"
+    _err "Usage: aap-demo credentials keepalive [setup|enable|status|disable|run]"
     return 2
   fi
   bash "${SCRIPT_DIR}/scripts/aap-demo-token-keepalive.sh" "${2:-status}"
@@ -2929,7 +2971,7 @@ setup_namespace() {
       sleep 2
     fi
   fi
-  kubectl create namespace "$NAMESPACE" 2>/dev/null || true
+  kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
   # Grant SCCs — required for pods to bind privileged ports
   if ! command -v oc &>/dev/null && command -v crc &>/dev/null; then
@@ -2948,11 +2990,12 @@ setup_namespace() {
 
   if [ -n "$PULL_SECRET" ]; then
     echo "Using pull secret from encrypted Vault"
-    kubectl delete secret redhat-operators-pull-secret -n "$NAMESPACE" 2>/dev/null || true
     kubectl create secret generic redhat-operators-pull-secret \
       --from-file=.dockerconfigjson=/dev/fd/3 \
       --type=kubernetes.io/dockerconfigjson \
-      -n "$NAMESPACE" 3< <(printf '%s' "$PULL_SECRET")
+      -n "$NAMESPACE" \
+      --dry-run=client -o yaml 3< <(printf '%s' "$PULL_SECRET") |
+      kubectl apply -f - >/dev/null
 
     # Add pull secret to default ServiceAccount (merge, don't replace)
     # This ensures pods using the default SA (e.g., postgres, redis) can pull images
@@ -3373,7 +3416,7 @@ _normalize_addon_name() {
 }
 
 _addons_config_file() {
-  echo "${HOME}/.aap-demo/config"
+  echo "$AAP_DEMO_CONFIG"
 }
 
 _addons_list() {
@@ -3669,7 +3712,7 @@ cmd_disable() {
 # ---------------------------------------------------------------------------
 _check_for_updates() {
   local repo_root="$SCRIPT_DIR"
-  local stamp_file="${HOME}/.aap-demo/.last_update_check"
+  local stamp_file="${AAP_DEMO_DIR}/.last_update_check"
 
   # Skip in CI and non-interactive sessions
   [ "${CI:-}" = "true" ] && return 0
@@ -3753,16 +3796,13 @@ if aap_demo_service_managed; then
       _err "Disable automatic state restore before rebuilding or deleting the demo: aap-demo service disable"
       exit 1
       ;;
-    maintenance)
-      if [ "${EXTRA_ARGS[0]:-}" = uninstall ] && [ "$MAINTENANCE_APPLY" = true ]; then
-        _err "Disable the state service before uninstalling: aap-demo service disable"
-        exit 1
-      fi
-      ;;
   esac
 fi
 
-if aap_demo_command_requires_lock "$COMMAND"; then
+if aap_demo_command_requires_lock "$COMMAND" \
+  && ! { [ "$COMMAND" = maintenance ] \
+    && [ "${EXTRA_ARGS[0]:-}" = uninstall ] \
+    && [ "$MAINTENANCE_APPLY" = true ]; }; then
   aap_demo_acquire_operation_lock "$COMMAND" || exit 1
 fi
 

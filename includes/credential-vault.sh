@@ -81,7 +81,12 @@ _aap_demo_vault_migrate_legacy() {
   mkdir -p "$config_dir"
   chmod 700 "$config_dir"
 
-  if [ ! -s "$AAP_DEMO_VAULT_PASSWORD_FILE" ]; then
+  if [ -e "$AAP_DEMO_VAULT_PASSWORD_FILE" ] || [ -L "$AAP_DEMO_VAULT_PASSWORD_FILE" ]; then
+    [ -s "$AAP_DEMO_VAULT_PASSWORD_FILE" ] || {
+      _err "Existing Vault password file is empty or unusable; it was not changed"
+      return 1
+    }
+  else
     if [ -e "$AAP_DEMO_VAULT_FILE" ]; then
       _err "Vault exists without its password file: $AAP_DEMO_VAULT_FILE"
       return 1
@@ -184,14 +189,29 @@ _aap_demo_vault_ensure_password_file() {
   mkdir -p "$config_dir"
   chmod 700 "$config_dir"
 
-  if [ -s "$AAP_DEMO_VAULT_PASSWORD_FILE" ]; then
+  if [ -e "$AAP_DEMO_VAULT_PASSWORD_FILE" ] || [ -L "$AAP_DEMO_VAULT_PASSWORD_FILE" ]; then
+    [ -s "$AAP_DEMO_VAULT_PASSWORD_FILE" ] || {
+      _err "Existing Vault password file is empty or unusable; it was not changed"
+      return 1
+    }
     _aap_demo_private_mode "$AAP_DEMO_VAULT_PASSWORD_FILE"
     return 0
   fi
-  umask 077
-  if ! "$AAP_DEMO_VAULT_PYTHON" -c 'import secrets; print(secrets.token_urlsafe(48))' \
-    >"$AAP_DEMO_VAULT_PASSWORD_FILE"; then
-    rm -f "$AAP_DEMO_VAULT_PASSWORD_FILE"
+  if [ -s "$AAP_DEMO_VAULT_FILE" ]; then
+    _err "Vault exists without its password file: $AAP_DEMO_VAULT_PASSWORD_FILE"
+    return 1
+  fi
+  # Exclusive creation protects a shared password created concurrently by another product.
+  if ! "$AAP_DEMO_VAULT_PYTHON" - "$AAP_DEMO_VAULT_PASSWORD_FILE" <<'PY'
+import os
+import secrets
+import sys
+
+fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, "w", encoding="utf-8") as stream:
+    stream.write(secrets.token_urlsafe(48) + "\n")
+PY
+  then
     _err "Unable to generate the Ansible Vault password file"
     return 1
   fi
@@ -230,31 +250,50 @@ _aap_demo_vault_ensure_file() {
 }
 
 aap_demo_vault_get() {
-  local key="$1"
-  _aap_demo_vault_require_tools || return 1
-  _aap_demo_vault_migrate_legacy || return 1
+  local key="$1" plain
+  [ "$key" != "aap_demo.galaxy.offline_token" ] || key=ah_offline_token
+  _aap_demo_vault_require_tools || return 2
+  _aap_demo_vault_migrate_legacy || return 2
   [ -s "$AAP_DEMO_VAULT_FILE" ] || return 1
-  [ -s "$AAP_DEMO_VAULT_PASSWORD_FILE" ] || return 1
-  _aap_demo_private_mode "$AAP_DEMO_VAULT_FILE"
-  _aap_demo_private_mode "$AAP_DEMO_VAULT_PASSWORD_FILE"
+  [ -s "$AAP_DEMO_VAULT_PASSWORD_FILE" ] || {
+    _err "Vault password file is missing: $AAP_DEMO_VAULT_PASSWORD_FILE"
+    return 2
+  }
+  chmod 700 "$(dirname "$AAP_DEMO_VAULT_FILE")" || return 2
+  _aap_demo_private_mode "$AAP_DEMO_VAULT_FILE" || return 2
+  _aap_demo_private_mode "$AAP_DEMO_VAULT_PASSWORD_FILE" || return 2
 
-  "$AAP_DEMO_ANSIBLE_VAULT" view \
+  # A decryption error must not look like a missing token and trigger replacement.
+  plain=$("$AAP_DEMO_ANSIBLE_VAULT" view \
     --vault-password-file "$AAP_DEMO_VAULT_PASSWORD_FILE" \
-    "$AAP_DEMO_VAULT_FILE" 2>/dev/null |
-    AAP_DEMO_SECRET_KEY="$key" "$AAP_DEMO_VAULT_PYTHON" -c '
+    "$AAP_DEMO_VAULT_FILE" 2>/dev/null) || {
+      _err "Unable to decrypt $AAP_DEMO_VAULT_FILE; check its Vault password file"
+      return 2
+    }
+  AAP_DEMO_SECRET_KEY="$key" "$AAP_DEMO_VAULT_PYTHON" -c '
 import os
 import sys
 import yaml
 
-value = yaml.safe_load(sys.stdin) or {}
-for part in os.environ["AAP_DEMO_SECRET_KEY"].split("."):
+try:
+    value = yaml.safe_load(sys.stdin) or {}
+except yaml.YAMLError:
+    print("ERROR: Invalid YAML in credential Vault", file=sys.stderr)
+    raise SystemExit(2)
+if not isinstance(value, dict):
+    print("ERROR: Credential Vault root must be a YAML mapping", file=sys.stderr)
+    raise SystemExit(2)
+key = os.environ["AAP_DEMO_SECRET_KEY"]
+if key == "ah_offline_token" and key not in value:
+    key = "aap_demo.galaxy.offline_token"
+for part in key.split("."):
     if not isinstance(value, dict) or part not in value:
         raise SystemExit(1)
     value = value[part]
 if not isinstance(value, str) or not value:
     raise SystemExit(1)
 sys.stdout.write(value)
-'
+' <<<"$plain"
 }
 
 aap_demo_vault_import_file() {
@@ -273,8 +312,9 @@ aap_demo_pull_secret_get() {
     printf '%s' "$value"
     return 0
   fi
-  for path in "$HOME/.aap-demo/pull-secret" "$HOME/.aap-demo/pull-secret.txt" \
-    "$HOME/.aap-demo/pull-secret.json"; do
+  for path in "${AAP_DEMO_DIR:-$HOME/.aap-demo}/pull-secret" \
+    "${AAP_DEMO_DIR:-$HOME/.aap-demo}/pull-secret.txt" \
+    "${AAP_DEMO_DIR:-$HOME/.aap-demo}/pull-secret.json"; do
     [ -s "$path" ] || continue
     aap_demo_vault_import_file "$key" "$path" || return 1
     aap_demo_vault_get "$key"
@@ -289,9 +329,91 @@ aap_demo_pull_secret_get() {
   return 1
 }
 
+aap_demo_pull_secret_fetch_redhat() {
+  local offline_token token_response access_token pull_secret
+  local vault_key="aap_demo.redhat.pull_secret"
+  local token_url="https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token"
+  local pull_secret_url="https://api.openshift.com/api/accounts_mgmt/v1/access_token"
+  local credential_vault_dir
+
+  _aap_demo_vault_require_tools || return 1
+  offline_token=$(aap_demo_vault_get "aap_demo.redhat.offline_token" 2>/dev/null || true)
+  [ -n "$offline_token" ] || return 1
+  command -v curl >/dev/null 2>&1 || {
+    _err "curl is required to retrieve the OpenShift pull secret"
+    return 1
+  }
+
+  credential_vault_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # shellcheck source=secure-curl.sh
+  source "${credential_vault_dir}/secure-curl.sh"
+
+  token_response=$(printf '%s' "$offline_token" | curl --silent --show-error --fail \
+    --connect-timeout 15 --max-time 45 \
+    --request POST \
+    --data-urlencode "grant_type=refresh_token" \
+    --data-urlencode "client_id=rhsm-api" \
+    --data-urlencode "refresh_token@-" \
+    "$token_url") || {
+      unset offline_token token_response
+      _err "Could not exchange the Red Hat offline token for pull-secret access"
+      return 1
+    }
+  unset offline_token
+
+  access_token=$("$AAP_DEMO_VAULT_PYTHON" -c '
+import json
+import sys
+
+value = json.load(sys.stdin).get("access_token", "")
+if not value:
+    raise SystemExit(1)
+sys.stdout.write(value)
+' <<<"$token_response") || {
+    unset token_response access_token
+    _err "Red Hat SSO returned an invalid token response"
+    return 1
+  }
+  unset token_response
+
+  pull_secret=$(curl --silent --show-error --fail \
+    --connect-timeout 15 --max-time 45 \
+    --request POST \
+    -H "Accept: application/json" \
+    -H "Authorization: Bearer $access_token" \
+    "$pull_secret_url") || {
+      unset access_token pull_secret
+      _err "Could not retrieve the OpenShift pull secret from Red Hat"
+      return 1
+    }
+  unset access_token
+
+  pull_secret=$("$AAP_DEMO_VAULT_PYTHON" -c '
+import json
+import sys
+
+value = json.load(sys.stdin)
+if not isinstance(value, dict) or not isinstance(value.get("auths"), dict) or not value["auths"]:
+    raise SystemExit(1)
+sys.stdout.write(json.dumps(value, separators=(",", ":")))
+' <<<"$pull_secret") || {
+    unset pull_secret
+    _err "Red Hat returned an invalid OpenShift pull secret"
+    return 1
+  }
+
+  aap_demo_vault_set "$vault_key" "$pull_secret" || {
+    unset pull_secret
+    return 1
+  }
+  printf '%s' "$pull_secret"
+  unset pull_secret
+}
+
 aap_demo_vault_set() {
   local key="$1"
   local value="$2"
+  [ "$key" != "aap_demo.galaxy.offline_token" ] || key=ah_offline_token
   _aap_demo_vault_ensure_file || return 1
 
   local vault_dir plain encrypted
@@ -327,6 +449,10 @@ for part in parts[:-1]:
         target[part] = child
     target = child
 target[parts[-1]] = secret_value
+if parts == ["ah_offline_token"]:
+    legacy = data.get("aap_demo", {})
+    if isinstance(legacy, dict) and isinstance(legacy.get("galaxy"), dict):
+        legacy["galaxy"].pop("offline_token", None)
 with open(path, "w", encoding="utf-8") as stream:
     yaml.safe_dump(data, stream, default_flow_style=False, sort_keys=True)
 PY
@@ -350,6 +476,7 @@ PY
 
 aap_demo_vault_delete() {
   local key="$1"
+  [ "$key" != "aap_demo.galaxy.offline_token" ] || key=ah_offline_token
   [ -s "$AAP_DEMO_VAULT_FILE" ] || return 0
   [ -s "$AAP_DEMO_VAULT_PASSWORD_FILE" ] || return 1
   _aap_demo_vault_require_tools || return 1
@@ -385,6 +512,10 @@ for part in parts[:-1]:
 else:
     if isinstance(target, dict):
         target.pop(parts[-1], None)
+if parts == ["ah_offline_token"]:
+    legacy = data.get("aap_demo", {})
+    if isinstance(legacy, dict) and isinstance(legacy.get("galaxy"), dict):
+        legacy["galaxy"].pop("offline_token", None)
 with open(path, "w", encoding="utf-8") as stream:
     yaml.safe_dump(data, stream, default_flow_style=False, sort_keys=True)
 PY
@@ -404,4 +535,54 @@ PY
   rm -f "$plain"
   mv "$encrypted" "$AAP_DEMO_VAULT_FILE"
   _aap_demo_private_mode "$AAP_DEMO_VAULT_FILE"
+}
+
+aap_demo_vault_remove_managed() {
+  local vault_dir plain rc
+  vault_dir=$(dirname "$AAP_DEMO_VAULT_FILE")
+
+  if [ -s "$AAP_DEMO_VAULT_FILE" ]; then
+    aap_demo_vault_delete "ah_offline_token" || return 1
+    aap_demo_vault_delete "aap_demo" || return 1
+    _aap_demo_vault_require_tools || return 1
+    plain=$(mktemp "${vault_dir}/.env-aap-demo.inspect.XXXXXX") || return 1
+    chmod 600 "$plain"
+    if ! "$AAP_DEMO_ANSIBLE_VAULT" view \
+      --vault-password-file "$AAP_DEMO_VAULT_PASSWORD_FILE" \
+      "$AAP_DEMO_VAULT_FILE" >"$plain"; then
+      rm -f "$plain"
+      _err "Unable to verify managed credential removal"
+      return 1
+    fi
+    "$AAP_DEMO_VAULT_PYTHON" - "$plain" <<'PY' || rc=$?
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    data = yaml.safe_load(stream)
+raise SystemExit(0 if not data else 1)
+PY
+    rm -f "$plain"
+    rc=${rc:-0}
+    case "$rc" in
+      0)
+        rm -f "$AAP_DEMO_VAULT_FILE"
+        ;;
+      1) ;;
+      *)
+        _err "Unable to inspect remaining encrypted credentials"
+        return 1
+        ;;
+    esac
+  else
+    rm -f "$AAP_DEMO_VAULT_FILE"
+  fi
+
+  rm -f -- \
+    "$vault_dir/env-aap-demo.yml" \
+    "$vault_dir/.vaultpass-aap-demo.txt" \
+    "$vault_dir/env_microshift.yml" \
+    "$vault_dir/.vaultpass_microshift.txt"
+  rmdir "$vault_dir" 2>/dev/null || true
+  rmdir "$(dirname "$vault_dir")" 2>/dev/null || true
 }
